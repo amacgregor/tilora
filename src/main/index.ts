@@ -4,6 +4,9 @@ import { APP_NAME, WINDOW_CONFIG } from '@shared/constants';
 import { loadAppState, saveAppState } from './persistence';
 import type { AppState } from '@shared/workspace';
 
+// Enable autoplay for audio/video (required for YouTube, etc.)
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
+
 let mainWindow: BrowserWindow | null = null;
 
 function createWindow(): void {

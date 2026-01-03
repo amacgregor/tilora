@@ -75,7 +75,8 @@ export class TileManager {
 
     // Webview attributes
     webview.setAttribute('allowpopups', 'true');
-    webview.setAttribute('webpreferences', 'contextIsolation=yes');
+    webview.setAttribute('plugins', 'true');
+    webview.setAttribute('webpreferences', 'contextIsolation=yes, autoplayPolicy=no-user-gesture-required');
 
     // Add click handler to focus this tile
     webview.addEventListener('focus', () => this.focusTile(tileId));
