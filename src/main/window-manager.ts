@@ -14,6 +14,8 @@ import {
   getAllWindowIds,
 } from './persistence';
 import { generateWindowId, AppState, WindowGeometry } from '@shared/workspace';
+import { overlayManager } from './overlay-manager';
+import type { OverlayUpdatePayload } from '@shared/overlay-types';
 
 /**
  * Context for a managed window
@@ -126,6 +128,11 @@ export class WindowManager {
 
     this.windows.set(id, context);
 
+    // Create overlay window for this window
+    window.once('ready-to-show', () => {
+      overlayManager.createOverlay(id, window);
+    });
+
     return context;
   }
 
@@ -201,6 +208,13 @@ export class WindowManager {
     if (context && !context.window.isDestroyed()) {
       context.window.webContents.send(channel, ...args);
     }
+  }
+
+  /**
+   * Update overlay tiles for a window
+   */
+  updateOverlayTiles(windowId: string, payload: OverlayUpdatePayload): void {
+    overlayManager.updateTiles(windowId, payload);
   }
 
   /**

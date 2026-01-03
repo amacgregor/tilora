@@ -32,6 +32,9 @@ interface ManagedTileView {
   isLoading: boolean;
 }
 
+// Check if we're on Linux - need injected CSS indicators instead of overlay
+const isLinux = process.platform === 'linux';
+
 /**
  * Session partition for extension support
  */
@@ -260,6 +263,9 @@ export class TileViewManager {
     managedView.isMuted = muted;
     managedView.view.webContents.setAudioMuted(muted);
 
+    // Update audio indicator (Linux only)
+    void this.updateAudioIndicator(id, managedView.isAudioPlaying, muted);
+
     // Notify renderer
     this.emitAudioState(managedView);
 
@@ -276,6 +282,9 @@ export class TileViewManager {
     const window = this.getWindow(managedView.windowId);
     if (!window || window.isDestroyed()) return false;
 
+    // Get previously focused tile to unfocus it
+    const prevFocusedId = this.lastFocusedId.get(managedView.windowId);
+
     // Bring to front by reordering child views
     window.contentView.removeChildView(managedView.view);
     window.contentView.addChildView(managedView.view);
@@ -285,6 +294,12 @@ export class TileViewManager {
 
     // Track as last focused
     this.lastFocusedId.set(managedView.windowId, id);
+
+    // Update focus indicators (Linux only)
+    if (prevFocusedId && prevFocusedId !== id) {
+      void this.updateFocusIndicator(prevFocusedId, false);
+    }
+    void this.updateFocusIndicator(id, true);
 
     // Notify renderer
     window.webContents.send(IPC_CHANNELS.TILE_VIEW_FOCUSED, { tileId: id });
@@ -435,16 +450,25 @@ export class TileViewManager {
     webContents.on('media-started-playing', () => {
       managedView.isAudioPlaying = true;
       this.emitAudioState(managedView);
+      void this.updateAudioIndicator(id, true, managedView.isMuted);
     });
 
     webContents.on('media-paused', () => {
       managedView.isAudioPlaying = false;
       this.emitAudioState(managedView);
+      void this.updateAudioIndicator(id, false, managedView.isMuted);
     });
 
     // Focus detection - track when this view gets focused
     const notifyFocus = (): void => {
-      if (this.lastFocusedId.get(windowId) !== id) {
+      const prevFocusedId = this.lastFocusedId.get(windowId);
+      if (prevFocusedId !== id) {
+        // Update focus indicators (Linux only)
+        if (prevFocusedId) {
+          void this.updateFocusIndicator(prevFocusedId, false);
+        }
+        void this.updateFocusIndicator(id, true);
+
         this.lastFocusedId.set(windowId, id);
         const window = this.getWindow(windowId);
         if (window && !window.isDestroyed()) {
@@ -521,6 +545,9 @@ export class TileViewManager {
     webContents.on('dom-ready', () => {
       this.injectFullscreenOverride(webContents);
     });
+
+    // Setup audio toggle listener for Linux injected indicators
+    this.setupAudioToggleListener(managedView);
   }
 
   /**
@@ -581,6 +608,131 @@ export class TileViewManager {
 
   private getWindow(windowId: string): BrowserWindow | null {
     return this.windowGetter?.(windowId) || null;
+  }
+
+  /**
+   * Update focus indicator for a tile (Linux only - uses injected CSS)
+   */
+  async updateFocusIndicator(id: string, isFocused: boolean): Promise<void> {
+    if (!isLinux) return; // Only needed on Linux
+
+    const managedView = this.views.get(id);
+    if (!managedView) return;
+
+    const webContents = managedView.view.webContents;
+    if (webContents.isDestroyed()) return;
+
+    // Use JavaScript to add/remove a style element (more reliable than insertCSS)
+    const script = `
+      (function() {
+        const styleId = '__tilora_focus_style';
+        let style = document.getElementById(styleId);
+
+        if (${!isFocused}) {
+          // Remove focus border
+          if (style) style.remove();
+          return;
+        }
+
+        // Add focus border
+        if (!style) {
+          style = document.createElement('style');
+          style.id = styleId;
+          document.head.appendChild(style);
+        }
+        style.textContent = \`
+          html::after {
+            content: '';
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            border: 3px solid #0078d4;
+            pointer-events: none;
+            z-index: 2147483647;
+            box-sizing: border-box;
+          }
+        \`;
+      })();
+    `;
+
+    try {
+      await webContents.executeJavaScript(script);
+    } catch {
+      // Ignore errors
+    }
+  }
+
+  /**
+   * Update audio indicator for a tile (Linux only - uses injected element)
+   */
+  async updateAudioIndicator(id: string, isPlaying: boolean, isMuted: boolean): Promise<void> {
+    if (!isLinux) return; // Only needed on Linux
+
+    const managedView = this.views.get(id);
+    if (!managedView) return;
+
+    const webContents = managedView.view.webContents;
+    if (webContents.isDestroyed()) return;
+
+    // Script to add/update/remove audio indicator - using simple text
+    const script = `
+      (function() {
+        const indicatorId = '__tilora_audio_indicator';
+        let indicator = document.getElementById(indicatorId);
+
+        if (!${isPlaying}) {
+          if (indicator) indicator.remove();
+          return;
+        }
+
+        if (!indicator) {
+          indicator = document.createElement('div');
+          indicator.id = indicatorId;
+          indicator.style.cssText = 'position:fixed;top:8px;right:8px;background:rgba(0,0,0,0.85);border-radius:6px;padding:8px 14px;cursor:pointer;font-family:system-ui,sans-serif;font-size:13px;font-weight:500;color:white;z-index:2147483647;user-select:none;box-shadow:0 2px 8px rgba(0,0,0,0.3);';
+          indicator.onmouseenter = function() { this.style.background = 'rgba(0,0,0,0.95)'; };
+          indicator.onmouseleave = function() { this.style.background = 'rgba(0,0,0,0.85)'; };
+          indicator.onclick = function() { console.log('__tilora_toggle_mute__'); };
+          document.body.appendChild(indicator);
+        }
+
+        indicator.textContent = ${isMuted} ? '[x] Unmute' : '[*] Mute';
+      })();
+    `;
+
+    try {
+      await webContents.executeJavaScript(script);
+    } catch {
+      // Ignore errors
+    }
+  }
+
+  /**
+   * Setup console message listener for audio toggle (Linux audio indicator)
+   */
+  private setupAudioToggleListener(managedView: ManagedTileView): void {
+    if (!isLinux) return;
+
+    const { id, view, windowId } = managedView;
+    const webContents = view.webContents;
+
+    webContents.on('console-message', (_event, _level, message) => {
+      if (message === '__tilora_toggle_mute__') {
+        // Toggle mute state
+        const newMuted = !managedView.isMuted;
+        this.setMuted(id, newMuted);
+
+        // Update indicator
+        void this.updateAudioIndicator(id, managedView.isAudioPlaying, newMuted);
+
+        // Notify main window
+        const window = this.getWindow(windowId);
+        if (window && !window.isDestroyed()) {
+          window.webContents.send(IPC_CHANNELS.OVERLAY_TOGGLE_MUTE, id);
+        }
+      }
+    });
   }
 }
 

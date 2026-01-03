@@ -15,6 +15,7 @@ import type {
   FocusUpdate,
   SnapshotResponse,
 } from '@shared/tile-ipc';
+import type { OverlayUpdatePayload } from '@shared/overlay-types';
 
 /**
  * Helper to create IPC listener
@@ -144,6 +145,22 @@ const api = {
     onFullscreen: createTypedListener<FullscreenUpdate>(IPC_CHANNELS.TILE_VIEW_FULLSCREEN),
     onFavicon: createTypedListener<FaviconUpdate>(IPC_CHANNELS.TILE_VIEW_FAVICON),
     onCreated: createTypedListener<CreateTileResponse>(IPC_CHANNELS.TILE_VIEW_CREATED),
+  },
+
+  // Overlay API
+  overlay: {
+    updateTiles: async (payload: OverlayUpdatePayload): Promise<void> =>
+      ipcRenderer.invoke(IPC_CHANNELS.OVERLAY_UPDATE_TILES, payload) as Promise<void>,
+
+    onToggleMute: (callback: (tileId: string) => void): (() => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, tileId: string): void => {
+        callback(tileId);
+      };
+      ipcRenderer.on(IPC_CHANNELS.OVERLAY_TOGGLE_MUTE, handler);
+      return (): void => {
+        ipcRenderer.removeListener(IPC_CHANNELS.OVERLAY_TOGGLE_MUTE, handler);
+      };
+    },
   },
 };
 

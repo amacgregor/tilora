@@ -66,6 +66,10 @@ export const IPC_CHANNELS = {
   TILE_VIEW_FOCUSED: 'tile-view:focused',
   TILE_VIEW_FULLSCREEN: 'tile-view:fullscreen',
   TILE_VIEW_FAVICON: 'tile-view:favicon',
+
+  // Overlay window
+  OVERLAY_UPDATE_TILES: 'overlay:update-tiles',
+  OVERLAY_TOGGLE_MUTE: 'overlay:toggle-mute',
 } as const;
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS];

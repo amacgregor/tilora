@@ -14,6 +14,7 @@ import type {
   FocusUpdate,
   SnapshotResponse,
 } from '../../shared/tile-ipc';
+import type { OverlayUpdatePayload } from '../../shared/overlay-types';
 
 /**
  * Tile Views API for WebContentsView-based tiles
@@ -96,6 +97,17 @@ interface TiloraAPI {
 
   // Tile Views API (WebContentsView-based)
   tiles: TilesAPI;
+
+  // Overlay API
+  overlay: OverlayAPI;
+}
+
+/**
+ * Overlay API for transparent overlay window
+ */
+interface OverlayAPI {
+  updateTiles: (payload: OverlayUpdatePayload) => Promise<void>;
+  onToggleMute: (callback: (tileId: string) => void) => () => void;
 }
 
 declare global {

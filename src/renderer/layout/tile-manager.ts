@@ -24,7 +24,8 @@ import {
 import { TileProxy, SleepingTile, createTileProxy } from './tile-proxy';
 import type { Workspace, TileState, SerializedLayoutNode } from '@shared/workspace';
 import type { BoundsUpdate } from '@shared/tile-ipc';
-import { TILE_LIFECYCLE } from '@shared/constants';
+import type { OverlayTileState, OverlayUpdatePayload } from '@shared/overlay-types';
+import { TILE_LIFECYCLE, WINDOW_CONFIG } from '@shared/constants';
 
 export class TileManager {
   private container: HTMLElement;
@@ -164,6 +165,13 @@ export class TileManager {
         if (proxy) {
           proxy.faviconUrl = data.faviconUrl;
         }
+      })
+    );
+
+    // Overlay mute toggle (from clicking audio indicator in overlay)
+    this.eventUnsubscribers.push(
+      window.tilora.overlay.onToggleMute((tileId) => {
+        void this.toggleMute(tileId);
       })
     );
   }
@@ -318,6 +326,9 @@ export class TileManager {
 
     // Position the indicator
     this.positionAudioIndicator(tileId);
+
+    // Update overlay with new audio state
+    this.sendOverlayUpdate();
   }
 
   /**
@@ -634,10 +645,10 @@ export class TileManager {
       void window.tilora.tiles.setBounds(boundsUpdates);
     }
 
-    // Update focus indicators
+    // Update focus indicators (legacy - may not be visible)
     this.updateFocusIndicators();
 
-    // Update audio indicator positions
+    // Update audio indicator positions (legacy - may not be visible)
     for (const tileId of this.audioIndicators.keys()) {
       this.positionAudioIndicator(tileId);
     }
@@ -646,6 +657,41 @@ export class TileManager {
     for (const tileId of this.errorOverlays.keys()) {
       this.positionErrorOverlay(tileId);
     }
+
+    // Send update to overlay window
+    this.sendOverlayUpdate();
+  }
+
+  /**
+   * Send tile states to overlay window for rendering borders and audio indicators
+   */
+  private sendOverlayUpdate(): void {
+    const tiles: OverlayTileState[] = [];
+
+    for (const [tileId, proxy] of this.tileProxies) {
+      // Convert bounds to window coordinates (add toolbar offset for overlay)
+      const windowBounds: Bounds = {
+        x: proxy.bounds.x,
+        y: proxy.bounds.y + WINDOW_CONFIG.toolbarHeight,
+        width: proxy.bounds.width,
+        height: proxy.bounds.height,
+      };
+
+      tiles.push({
+        id: tileId,
+        bounds: windowBounds,
+        isFocused: tileId === this.focusedTileId,
+        isAudioPlaying: proxy.isAudioPlaying,
+        isMuted: proxy.isMuted,
+      });
+    }
+
+    const payload: OverlayUpdatePayload = {
+      tiles,
+      focusedTileId: this.focusedTileId,
+    };
+
+    void window.tilora.overlay.updateTiles(payload);
   }
 
   private applyBoundsToElement(element: HTMLElement, bounds: Bounds): void {

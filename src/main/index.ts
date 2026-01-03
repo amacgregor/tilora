@@ -4,6 +4,8 @@ import { tileViewManager } from './tile-view-manager';
 import { registerTileIpcHandlers } from './ipc-tile-bridge';
 import { saveAppState, getAllWindowIds, clearAllState } from './persistence';
 import type { AppState } from '@shared/workspace';
+import { IPC_CHANNELS } from '@shared/ipc-channels';
+import type { OverlayUpdatePayload } from '@shared/overlay-types';
 
 // Enable autoplay for audio/video (required for YouTube, etc.)
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
@@ -265,6 +267,18 @@ ipcMain.handle('exit-window-fullscreen', (event) => {
   const browserWindow = BrowserWindow.fromWebContents(webContents);
   if (browserWindow && !browserWindow.isDestroyed() && browserWindow.isFullScreen()) {
     browserWindow.setFullScreen(false);
+  }
+});
+
+// Overlay update handler - receives tile states from main renderer, forwards to overlay
+ipcMain.handle(IPC_CHANNELS.OVERLAY_UPDATE_TILES, (event, payload: OverlayUpdatePayload) => {
+  const webContents = event.sender;
+  const browserWindow = BrowserWindow.fromWebContents(webContents);
+  if (!browserWindow) return;
+
+  const context = windowManager.getWindowByBrowserWindow(browserWindow);
+  if (context) {
+    windowManager.updateOverlayTiles(context.id, payload);
   }
 });
 
