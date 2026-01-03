@@ -173,13 +173,21 @@ class TiloraApp {
       this.tileManager.swapDirection('down');
     });
 
-    // Resize
-    window.tilora.onResizeGrow(() => {
-      this.tileManager.resizeFocusedSplit(0.05);
+    // Directional resize
+    window.tilora.onResizeLeft(() => {
+      this.tileManager.resizeInDirection('left');
     });
 
-    window.tilora.onResizeShrink(() => {
-      this.tileManager.resizeFocusedSplit(-0.05);
+    window.tilora.onResizeRight(() => {
+      this.tileManager.resizeInDirection('right');
+    });
+
+    window.tilora.onResizeUp(() => {
+      this.tileManager.resizeInDirection('up');
+    });
+
+    window.tilora.onResizeDown(() => {
+      this.tileManager.resizeInDirection('down');
     });
   }
 

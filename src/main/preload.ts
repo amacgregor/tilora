@@ -37,9 +37,11 @@ const api = {
   onSwapUp: createListener('swap-up'),
   onSwapDown: createListener('swap-down'),
 
-  // Resize
-  onResizeGrow: createListener('resize-grow'),
-  onResizeShrink: createListener('resize-shrink'),
+  // Directional resize
+  onResizeLeft: createListener('resize-left'),
+  onResizeRight: createListener('resize-right'),
+  onResizeUp: createListener('resize-up'),
+  onResizeDown: createListener('resize-down'),
 };
 
 contextBridge.exposeInMainWorld('tilora', api);

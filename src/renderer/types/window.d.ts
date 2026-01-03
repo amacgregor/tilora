@@ -24,9 +24,11 @@ interface TiloraAPI {
   onSwapUp: (callback: () => void) => () => void;
   onSwapDown: (callback: () => void) => () => void;
 
-  // Resize
-  onResizeGrow: (callback: () => void) => () => void;
-  onResizeShrink: (callback: () => void) => () => void;
+  // Directional resize
+  onResizeLeft: (callback: () => void) => () => void;
+  onResizeRight: (callback: () => void) => () => void;
+  onResizeUp: (callback: () => void) => () => void;
+  onResizeDown: (callback: () => void) => () => void;
 }
 
 declare global {

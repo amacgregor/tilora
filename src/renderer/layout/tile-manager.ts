@@ -17,9 +17,7 @@ import {
   countTiles,
   findAdjacentTile,
   swapTiles,
-  adjustSplitRatio,
-  findParentSplit,
-  whichChild,
+  adjustSplitInDirection,
 } from './bsp';
 
 export interface Tile {
@@ -386,22 +384,14 @@ export class TileManager {
   }
 
   /**
-   * Resize the split containing the focused tile
-   * @param delta - Positive to grow, negative to shrink
+   * Resize the focused tile in a specific direction
+   * @param direction - Direction to resize (left/right/up/down)
+   * @param delta - Amount to resize (positive = grow in that direction)
    */
-  resizeFocusedSplit(delta: number): boolean {
+  resizeInDirection(direction: Direction, delta: number = 0.05): boolean {
     if (!this.focusedTileId) return false;
 
-    const parent = findParentSplit(this.layout, this.focusedTileId);
-    if (!parent) return false;
-
-    // Determine if focused tile is in first or second child
-    const position = whichChild(parent, this.focusedTileId);
-
-    // If in second child, invert delta so "grow" always grows the focused tile
-    const adjustedDelta = position === 'second' ? -delta : delta;
-
-    this.layout = adjustSplitRatio(this.layout, this.focusedTileId, adjustedDelta);
+    this.layout = adjustSplitInDirection(this.layout, this.focusedTileId, direction, delta);
     this.updateLayout();
     return true;
   }

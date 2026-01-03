@@ -392,6 +392,83 @@ export function adjustSplitRatio(
 }
 
 /**
+ * Find all ancestor splits of a tile
+ */
+export function findAncestorSplits(
+  root: LayoutNode,
+  tileId: string,
+  ancestors: SplitNode[] = []
+): SplitNode[] {
+  if (root.type === 'leaf') {
+    return root.tileId === tileId ? ancestors : [];
+  }
+
+  // Check first child
+  const inFirst = findAncestorSplits(root.first, tileId, [...ancestors, root]);
+  if (inFirst.length > 0) return inFirst;
+
+  // Check second child
+  return findAncestorSplits(root.second, tileId, [...ancestors, root]);
+}
+
+/**
+ * Adjust split ratio in a specific direction
+ * @param direction - Which direction to resize (left/right for horizontal, up/down for vertical)
+ * @param delta - Amount to adjust (positive = grow in that direction)
+ */
+export function adjustSplitInDirection(
+  root: LayoutNode,
+  tileId: string,
+  direction: Direction,
+  delta: number
+): LayoutNode {
+  const ancestors = findAncestorSplits(root, tileId);
+  if (ancestors.length === 0) return root;
+
+  // Find the appropriate split to adjust based on direction
+  const isHorizontal = direction === 'left' || direction === 'right';
+  const splitDirection: SplitDirection = isHorizontal ? 'vertical' : 'horizontal';
+
+  // Find the nearest ancestor with the matching split direction
+  // Start from the innermost (closest to tile) and work outward
+  for (let i = ancestors.length - 1; i >= 0; i--) {
+    const split = ancestors[i]!;
+    if (split.direction === splitDirection) {
+      // Determine if tile is in first or second child
+      const position = whichChild(split, tileId);
+
+      // Calculate the delta based on position and direction
+      let adjustedDelta = delta;
+
+      if (splitDirection === 'vertical') {
+        // Left/right resize
+        if (position === 'first') {
+          // Tile is on left, grow right edge = increase ratio
+          adjustedDelta = direction === 'right' ? delta : -delta;
+        } else {
+          // Tile is on right, grow left edge = decrease ratio
+          adjustedDelta = direction === 'left' ? -delta : delta;
+        }
+      } else {
+        // Up/down resize
+        if (position === 'first') {
+          // Tile is on top, grow bottom edge = increase ratio
+          adjustedDelta = direction === 'down' ? delta : -delta;
+        } else {
+          // Tile is on bottom, grow top edge = decrease ratio
+          adjustedDelta = direction === 'up' ? -delta : delta;
+        }
+      }
+
+      const newRatio = Math.max(0.1, Math.min(0.9, split.ratio + adjustedDelta));
+      return resizeSplit(root, split.id, newRatio);
+    }
+  }
+
+  return root;
+}
+
+/**
  * Check which child of a split contains a tile
  * Returns 'first', 'second', or null
  */
