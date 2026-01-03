@@ -2,8 +2,19 @@
  * Type declarations for the tilora API exposed via preload
  */
 
+import type { AppState } from '../../shared/workspace';
+
 interface TiloraAPI {
   getWindowBounds: () => Promise<{ width: number; height: number }>;
+
+  // Persistence
+  loadAppState: () => Promise<AppState>;
+  saveAppState: (state: AppState) => Promise<boolean>;
+
+  // Workspace switching
+  onSwitchWorkspace: (callback: (index: number) => void) => () => void;
+  onNewWorkspace: (callback: () => void) => () => void;
+
   onSplitVertical: (callback: () => void) => () => void;
   onSplitHorizontal: (callback: () => void) => () => void;
   onCloseTile: (callback: () => void) => () => void;

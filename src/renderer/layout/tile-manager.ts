@@ -19,11 +19,13 @@ import {
   swapTiles,
   adjustSplitInDirection,
 } from './bsp';
+import type { Workspace, TileState, SerializedLayoutNode } from '@shared/workspace';
 
 export interface Tile {
   id: string;
   webview: Electron.WebviewTag;
   url: string;
+  title: string;
 }
 
 export class TileManager {
@@ -98,6 +100,10 @@ export class TileManager {
 
     webview.addEventListener('page-title-updated', ((e: CustomEvent) => {
       const title = e.detail?.title || webview.getTitle?.() || '';
+      const tile = this.tiles.get(tileId);
+      if (tile) {
+        tile.title = title;
+      }
       this.onTitleChange?.(tileId, title);
     }) as EventListener);
 
@@ -107,7 +113,7 @@ export class TileManager {
     // Load URL
     webview.src = url;
 
-    const tile: Tile = { id: tileId, webview, url };
+    const tile: Tile = { id: tileId, webview, url, title: 'New Tab' };
     this.tiles.set(tileId, tile);
 
     return tile;
@@ -394,5 +400,83 @@ export class TileManager {
     this.layout = adjustSplitInDirection(this.layout, this.focusedTileId, direction, delta);
     this.updateLayout();
     return true;
+  }
+
+  /**
+   * Serialize current state to a Workspace object
+   */
+  serialize(workspaceId: string, workspaceName: string): Workspace {
+    const tiles: TileState[] = [];
+    for (const [id, tile] of this.tiles) {
+      tiles.push({
+        id,
+        url: tile.url,
+        title: tile.title,
+      });
+    }
+
+    return {
+      id: workspaceId,
+      name: workspaceName,
+      layout: this.layout as SerializedLayoutNode,
+      tiles,
+      focusedTileId: this.focusedTileId,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+  }
+
+  /**
+   * Restore from a Workspace object
+   */
+  restore(workspace: Workspace): void {
+    // Clear existing tiles
+    this.clearAllTiles();
+
+    // Restore layout
+    this.layout = workspace.layout as LayoutNode;
+
+    // Create webviews for each tile
+    for (const tileState of workspace.tiles) {
+      this.createTileWebview(tileState.id, tileState.url);
+      const tile = this.tiles.get(tileState.id);
+      if (tile) {
+        tile.title = tileState.title;
+      }
+    }
+
+    // Restore focus
+    if (workspace.focusedTileId && this.tiles.has(workspace.focusedTileId)) {
+      this.focusedTileId = workspace.focusedTileId;
+    } else {
+      const allIds = getAllTileIds(this.layout);
+      this.focusedTileId = allIds[0] || null;
+    }
+
+    this.updateLayout();
+  }
+
+  /**
+   * Clear all tiles from the container
+   */
+  private clearAllTiles(): void {
+    for (const [tileId] of this.tiles) {
+      this.removeTileWebview(tileId);
+    }
+    this.tiles.clear();
+    this.focusedTileId = null;
+  }
+
+  /**
+   * Notify that state has changed (for auto-save)
+   */
+  private onStateChange?: () => void;
+
+  setOnStateChange(callback: () => void): void {
+    this.onStateChange = callback;
+  }
+
+  private notifyStateChange(): void {
+    this.onStateChange?.();
   }
 }

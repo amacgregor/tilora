@@ -1,6 +1,8 @@
 import { app, BrowserWindow, ipcMain, globalShortcut, Menu } from 'electron';
 import * as path from 'path';
 import { APP_NAME, WINDOW_CONFIG } from '@shared/constants';
+import { loadAppState, saveAppState } from './persistence';
+import type { AppState } from '@shared/workspace';
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -182,6 +184,22 @@ function setupMenu(): void {
       ],
     },
     {
+      label: 'Workspaces',
+      submenu: [
+        {
+          label: 'New Workspace',
+          accelerator: 'CmdOrCtrl+T',
+          click: () => sendToRenderer('new-workspace'),
+        },
+        { type: 'separator' },
+        ...Array.from({ length: 9 }, (_, i) => ({
+          label: `Workspace ${i + 1}`,
+          accelerator: `CmdOrCtrl+${i + 1}`,
+          click: () => sendToRenderer('switch-workspace', i),
+        })),
+      ],
+    },
+    {
       label: 'Window',
       submenu: [
         { role: 'minimize' },
@@ -207,6 +225,14 @@ ipcMain.handle('get-window-bounds', () => {
   if (!mainWindow) return { width: 800, height: 600 };
   const size = mainWindow.getContentSize();
   return { width: size[0] ?? 800, height: size[1] ?? 600 };
+});
+
+ipcMain.handle('load-app-state', () => {
+  return loadAppState();
+});
+
+ipcMain.handle('save-app-state', (_event, state: AppState) => {
+  return saveAppState(state);
 });
 
 // App lifecycle
