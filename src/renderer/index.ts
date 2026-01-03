@@ -348,6 +348,19 @@ class TiloraApp {
     window.tilora.onResizeDown(() => {
       this.tileManager.resizeInDirection('down');
     });
+
+    // Audio controls
+    window.tilora.onToggleMute(() => {
+      this.tileManager.toggleMute();
+    });
+
+    window.tilora.onMuteAllExceptFocused(() => {
+      this.tileManager.muteAllExceptFocused();
+    });
+
+    window.tilora.onUnmuteAll(() => {
+      this.tileManager.unmuteAll();
+    });
   }
 
   private updateNavButtons(): void {

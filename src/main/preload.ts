@@ -21,6 +21,9 @@ const api = {
   loadAppState: () => ipcRenderer.invoke('load-app-state') as Promise<AppState>,
   saveAppState: (state: AppState) => ipcRenderer.invoke('save-app-state', state) as Promise<boolean>,
 
+  // Fullscreen control
+  exitWindowFullscreen: () => ipcRenderer.invoke('exit-window-fullscreen'),
+
   // Workspace switching
   onSwitchWorkspace: (callback: (index: number) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, index: number) => callback(index);
@@ -55,6 +58,11 @@ const api = {
   onResizeRight: createListener('resize-right'),
   onResizeUp: createListener('resize-up'),
   onResizeDown: createListener('resize-down'),
+
+  // Audio controls
+  onToggleMute: createListener('toggle-mute'),
+  onMuteAllExceptFocused: createListener('mute-all-except-focused'),
+  onUnmuteAll: createListener('unmute-all'),
 };
 
 contextBridge.exposeInMainWorld('tilora', api);

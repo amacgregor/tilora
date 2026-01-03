@@ -31,6 +31,7 @@ export interface TileState {
   id: string;
   url: string;
   title: string;
+  isMuted?: boolean;
 }
 
 /**

@@ -11,6 +11,9 @@ interface TiloraAPI {
   loadAppState: () => Promise<AppState>;
   saveAppState: (state: AppState) => Promise<boolean>;
 
+  // Fullscreen control
+  exitWindowFullscreen: () => Promise<void>;
+
   // Workspace switching
   onSwitchWorkspace: (callback: (index: number) => void) => () => void;
   onNewWorkspace: (callback: () => void) => () => void;
@@ -40,6 +43,11 @@ interface TiloraAPI {
   onResizeRight: (callback: () => void) => () => void;
   onResizeUp: (callback: () => void) => () => void;
   onResizeDown: (callback: () => void) => () => void;
+
+  // Audio controls
+  onToggleMute: (callback: () => void) => () => void;
+  onMuteAllExceptFocused: (callback: () => void) => () => void;
+  onUnmuteAll: (callback: () => void) => () => void;
 }
 
 declare global {

@@ -17,6 +17,7 @@ function createWindow(): void {
     minHeight: WINDOW_CONFIG.minHeight,
     title: APP_NAME,
     backgroundColor: '#1e1e1e',
+    fullscreenable: true, // Allow F11/menu fullscreen, but we'll block HTML5 fullscreen
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -31,6 +32,28 @@ function createWindow(): void {
 
   // Setup menu with keyboard shortcuts
   setupMenu();
+
+  // Track if fullscreen was triggered by user (F11/menu) vs webview
+  let userTriggeredFullscreen = false;
+
+  // Prevent HTML5 fullscreen from webviews taking over the entire screen
+  mainWindow.webContents.on('enter-html-full-screen', () => {
+    // If this wasn't user-triggered, exit fullscreen
+    if (!userTriggeredFullscreen && mainWindow && !mainWindow.isDestroyed()) {
+      setImmediate(() => {
+        mainWindow?.setFullScreen(false);
+      });
+    }
+  });
+
+  // Listen for actual window fullscreen changes
+  mainWindow.on('enter-full-screen', () => {
+    // If not user-triggered, immediately exit
+    if (!userTriggeredFullscreen && mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.setFullScreen(false);
+    }
+    userTriggeredFullscreen = false;
+  });
 
   mainWindow.on('closed', () => {
     mainWindow = null;
@@ -203,6 +226,26 @@ function setupMenu(): void {
       ],
     },
     {
+      label: 'Audio',
+      submenu: [
+        {
+          label: 'Toggle Mute',
+          accelerator: 'Alt+M',
+          click: () => sendToRenderer('toggle-mute'),
+        },
+        {
+          label: 'Mute All Except Focused',
+          accelerator: 'Alt+Shift+M',
+          click: () => sendToRenderer('mute-all-except-focused'),
+        },
+        {
+          label: 'Unmute All',
+          accelerator: 'Alt+U',
+          click: () => sendToRenderer('unmute-all'),
+        },
+      ],
+    },
+    {
       label: 'Window',
       submenu: [
         { role: 'minimize' },
@@ -236,6 +279,12 @@ ipcMain.handle('load-app-state', () => {
 
 ipcMain.handle('save-app-state', (_event, state: AppState) => {
   return saveAppState(state);
+});
+
+ipcMain.handle('exit-window-fullscreen', () => {
+  if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isFullScreen()) {
+    mainWindow.setFullScreen(false);
+  }
 });
 
 // App lifecycle

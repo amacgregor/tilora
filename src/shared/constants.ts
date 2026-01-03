@@ -27,6 +27,16 @@ export const LAYOUT_CONFIG = {
   defaultSplitRatio: 0.5,
 };
 
+export const TILE_LIFECYCLE = {
+  // Minimum dimensions before a tile is considered too small and put to sleep
+  sleepThresholdWidth: 200,
+  sleepThresholdHeight: 150,
+  // Time in ms of inactivity before sleeping unfocused tiles (0 = disabled)
+  sleepAfterInactiveMs: 0,
+  // Snapshot quality (0-100)
+  snapshotQuality: 80,
+};
+
 export const COLORS = {
   border: '#3a3a3a',
   focusBorder: '#0078d4',
