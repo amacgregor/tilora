@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; script-src * 'unsafe-inline' 'unsafe-eval'; style-src * 'unsafe-inline';">
+  <title>Tilora</title>
+</head>
+<body>
+  <div id="app">
+    <!-- Toolbar - completely separate from content area -->
+    <div id="toolbar">
+      <div class="toolbar-section">
+        <button id="btn-workspace" class="workspace-btn">Workspace 1</button>
+      </div>
+      <div class="toolbar-section nav-controls">
+        <button id="btn-back" title="Back" disabled>←</button>
+        <button id="btn-forward" title="Forward" disabled>→</button>
+        <button id="btn-reload" title="Reload">↻</button>
+      </div>
+      <div class="toolbar-section url-section">
+        <input type="text" id="url-bar" placeholder="Enter URL or search..." />
+      </div>
+      <div class="toolbar-section">
+        <button id="btn-split-v" title="Split Vertical">⎮</button>
+        <button id="btn-split-h" title="Split Horizontal">―</button>
+      </div>
+    </div>
+
+    <!-- Content area - webviews go here -->
+    <div id="content">
+      <div id="tile-container">
+        <!-- Webview will be inserted here by JS -->
+      </div>
+    </div>
+  </div>
+</body>
+</html>

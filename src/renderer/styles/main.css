@@ -1,0 +1,125 @@
+/* Tilora - Clean Styles */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 13px;
+  background: #1e1e1e;
+  color: #fff;
+  overflow: hidden;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* ===== TOOLBAR ===== */
+#toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 48px;
+  padding: 0 12px;
+  background: #2d2d2d;
+  border-bottom: 1px solid #404040;
+  flex-shrink: 0;
+}
+
+.toolbar-section {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.url-section {
+  flex: 1;
+  max-width: 600px;
+}
+
+/* Buttons */
+#toolbar button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 36px;
+  height: 32px;
+  padding: 0 12px;
+  background: #3c3c3c;
+  border: 1px solid #505050;
+  border-radius: 4px;
+  color: #fff;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+#toolbar button:hover {
+  background: #4a4a4a;
+}
+
+#toolbar button:disabled {
+  color: #666;
+  background: #2a2a2a;
+  cursor: not-allowed;
+}
+
+.workspace-btn {
+  font-weight: 600;
+  padding: 0 16px !important;
+}
+
+/* URL Bar */
+#url-bar {
+  width: 100%;
+  height: 32px;
+  padding: 0 12px;
+  background: #1a1a1a;
+  border: 1px solid #505050;
+  border-radius: 4px;
+  color: #fff;
+  font-size: 13px;
+  outline: none;
+}
+
+#url-bar:focus {
+  border-color: #0078d4;
+  background: #252525;
+}
+
+#url-bar::placeholder {
+  color: #888;
+}
+
+/* ===== CONTENT AREA ===== */
+#content {
+  flex: 1;
+  position: relative;
+  background: #1e1e1e;
+  overflow: hidden;
+}
+
+#tile-container {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+}
+
+/* Webview fills its container */
+#tile-container webview {
+  display: flex;
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  border: none;
+}
