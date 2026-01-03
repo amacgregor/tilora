@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { AppState, Workspace } from '@shared/workspace';
+import type { AppState } from '@shared/workspace';
 
 /**
  * Helper to create IPC listener
@@ -16,6 +16,7 @@ function createListener(channel: string) {
  */
 const api = {
   getWindowBounds: () => ipcRenderer.invoke('get-window-bounds'),
+  getWindowId: () => ipcRenderer.invoke('get-window-id') as Promise<string | null>,
 
   // Persistence
   loadAppState: () => ipcRenderer.invoke('load-app-state') as Promise<AppState>,

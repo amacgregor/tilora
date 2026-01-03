@@ -48,24 +48,53 @@ export interface Workspace {
 }
 
 /**
- * App state containing all workspaces
+ * Window geometry for persistence
+ */
+export interface WindowGeometry {
+  x?: number;
+  y?: number;
+  width: number;
+  height: number;
+  isMaximized?: boolean;
+}
+
+/**
+ * App state containing all workspaces for a window
  */
 export interface AppState {
   version: number;
+  windowId: string;
+  geometry?: WindowGeometry;
   activeWorkspaceId: string;
   workspaces: Workspace[];
 }
 
 /**
- * Default app state
+ * Master state tracking all windows
  */
-export function createDefaultAppState(): AppState {
+export interface WindowsState {
+  version: number;
+  windowIds: string[];
+}
+
+/**
+ * Default app state for a window
+ */
+export function createDefaultAppState(windowId?: string): AppState {
   const defaultWorkspace = createDefaultWorkspace('Workspace 1');
   return {
     version: 1,
+    windowId: windowId || generateId(),
     activeWorkspaceId: defaultWorkspace.id,
     workspaces: [defaultWorkspace],
   };
+}
+
+/**
+ * Generate a unique window ID
+ */
+export function generateWindowId(): string {
+  return generateId();
 }
 
 /**

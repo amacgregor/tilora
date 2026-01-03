@@ -1,70 +1,22 @@
-import { app, BrowserWindow, ipcMain, globalShortcut, Menu } from 'electron';
-import * as path from 'path';
-import { APP_NAME, WINDOW_CONFIG } from '@shared/constants';
-import { loadAppState, saveAppState } from './persistence';
+import { app, BrowserWindow, ipcMain, Menu, dialog } from 'electron';
+import { windowManager } from './window-manager';
+import { saveAppState, getAllWindowIds, clearAllState } from './persistence';
 import type { AppState } from '@shared/workspace';
 
 // Enable autoplay for audio/video (required for YouTube, etc.)
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
-
-let mainWindow: BrowserWindow | null = null;
-
-function createWindow(): void {
-  mainWindow = new BrowserWindow({
-    width: WINDOW_CONFIG.defaultWidth,
-    height: WINDOW_CONFIG.defaultHeight,
-    minWidth: WINDOW_CONFIG.minWidth,
-    minHeight: WINDOW_CONFIG.minHeight,
-    title: APP_NAME,
-    backgroundColor: '#1e1e1e',
-    fullscreenable: true, // Allow F11/menu fullscreen, but we'll block HTML5 fullscreen
-    webPreferences: {
-      nodeIntegration: false,
-      contextIsolation: true,
-      webviewTag: true,
-      preload: path.join(__dirname, 'preload.js'),
-    },
-  });
-
-  // Load the renderer
-  const rendererPath = path.join(__dirname, '../renderer/index.html');
-  void mainWindow.loadFile(rendererPath);
-
-  // Setup menu with keyboard shortcuts
-  setupMenu();
-
-  // Track if fullscreen was triggered by user (F11/menu) vs webview
-  let userTriggeredFullscreen = false;
-
-  // Prevent HTML5 fullscreen from webviews taking over the entire screen
-  mainWindow.webContents.on('enter-html-full-screen', () => {
-    // If this wasn't user-triggered, exit fullscreen
-    if (!userTriggeredFullscreen && mainWindow && !mainWindow.isDestroyed()) {
-      setImmediate(() => {
-        mainWindow?.setFullScreen(false);
-      });
-    }
-  });
-
-  // Listen for actual window fullscreen changes
-  mainWindow.on('enter-full-screen', () => {
-    // If not user-triggered, immediately exit
-    if (!userTriggeredFullscreen && mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.setFullScreen(false);
-    }
-    userTriggeredFullscreen = false;
-  });
-
-  mainWindow.on('closed', () => {
-    mainWindow = null;
-  });
-}
 
 function setupMenu(): void {
   const template: Electron.MenuItemConstructorOptions[] = [
     {
       label: 'File',
       submenu: [
+        {
+          label: 'New Window',
+          accelerator: 'CmdOrCtrl+N',
+          click: () => windowManager.createWindow(),
+        },
+        { type: 'separator' },
         {
           label: 'New Tile (Split Vertical)',
           accelerator: 'CmdOrCtrl+D',
@@ -85,7 +37,10 @@ function setupMenu(): void {
         {
           label: 'Close Window',
           accelerator: 'CmdOrCtrl+W',
-          click: () => mainWindow?.close(),
+          click: (): void => {
+            const focused = BrowserWindow.getFocusedWindow();
+            focused?.close();
+          },
         },
         { type: 'separator' },
         { role: 'quit' },
@@ -121,7 +76,10 @@ function setupMenu(): void {
         {
           label: 'Toggle DevTools',
           accelerator: 'F12',
-          click: () => mainWindow?.webContents.toggleDevTools(),
+          click: (): void => {
+            const focused = BrowserWindow.getFocusedWindow();
+            focused?.webContents.toggleDevTools();
+          },
         },
         { type: 'separator' },
         { role: 'togglefullscreen' },
@@ -261,39 +219,107 @@ function setupMenu(): void {
 }
 
 function sendToRenderer(channel: string, ...args: unknown[]): void {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send(channel, ...args);
-  }
+  windowManager.sendToFocusedRenderer(channel, ...args);
 }
 
 // IPC handlers
-ipcMain.handle('get-window-bounds', () => {
-  if (!mainWindow) return { width: 800, height: 600 };
-  const size = mainWindow.getContentSize();
+ipcMain.handle('get-window-bounds', (event) => {
+  const webContents = event.sender;
+  const browserWindow = BrowserWindow.fromWebContents(webContents);
+  if (!browserWindow) return { width: 800, height: 600 };
+  const size = browserWindow.getContentSize();
   return { width: size[0] ?? 800, height: size[1] ?? 600 };
 });
 
-ipcMain.handle('load-app-state', () => {
-  return loadAppState();
+ipcMain.handle('get-window-id', (event) => {
+  const webContents = event.sender;
+  const browserWindow = BrowserWindow.fromWebContents(webContents);
+  if (!browserWindow) return null;
+  const context = windowManager.getWindowByBrowserWindow(browserWindow);
+  return context?.id || null;
 });
 
-ipcMain.handle('save-app-state', (_event, state: AppState) => {
+ipcMain.handle('load-app-state', (event) => {
+  const webContents = event.sender;
+  const browserWindow = BrowserWindow.fromWebContents(webContents);
+  if (!browserWindow) return null;
+  const context = windowManager.getWindowByBrowserWindow(browserWindow);
+  return context?.appState || null;
+});
+
+ipcMain.handle('save-app-state', (event, state: AppState) => {
+  const webContents = event.sender;
+  const browserWindow = BrowserWindow.fromWebContents(webContents);
+  if (!browserWindow) return false;
+  const context = windowManager.getWindowByBrowserWindow(browserWindow);
+  if (context) {
+    return windowManager.saveWindowState(context.id, state);
+  }
   return saveAppState(state);
 });
 
-ipcMain.handle('exit-window-fullscreen', () => {
-  if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isFullScreen()) {
-    mainWindow.setFullScreen(false);
+ipcMain.handle('exit-window-fullscreen', (event) => {
+  const webContents = event.sender;
+  const browserWindow = BrowserWindow.fromWebContents(webContents);
+  if (browserWindow && !browserWindow.isDestroyed() && browserWindow.isFullScreen()) {
+    browserWindow.setFullScreen(false);
   }
 });
 
+/**
+ * Show dialog to ask user whether to restore previous session
+ */
+async function showRestoreSessionDialog(): Promise<boolean> {
+  const result = await dialog.showMessageBox({
+    type: 'question',
+    buttons: ['Start Fresh', 'Restore Session'],
+    defaultId: 1,
+    cancelId: 0,
+    title: 'Restore Session',
+    message: 'Would you like to restore your previous session?',
+    detail: 'Your previous windows and workspaces can be restored.',
+  });
+
+  // Button index 1 = "Restore Session"
+  return result.response === 1;
+}
+
+/**
+ * Initialize windows on app startup
+ */
+async function initializeWindows(): Promise<void> {
+  const savedWindowIds = getAllWindowIds();
+
+  if (savedWindowIds.length > 0) {
+    // There are saved windows, ask user what to do
+    const shouldRestore = await showRestoreSessionDialog();
+
+    if (shouldRestore) {
+      // Restore all saved windows
+      windowManager.restoreAllWindows();
+    } else {
+      // Clear saved state and start fresh
+      clearAllState();
+      windowManager.createWindow();
+    }
+  } else {
+    // No saved windows, create a new one
+    windowManager.createWindow();
+  }
+}
+
 // App lifecycle
 void app.whenReady().then(() => {
-  createWindow();
+  // Setup menu first (shared across all windows)
+  setupMenu();
+
+  // Initialize windows (may show restore dialog)
+  void initializeWindows();
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
+    // On macOS, re-create window when dock icon is clicked and no windows are open
+    if (windowManager.getWindowCount() === 0) {
+      windowManager.createWindow();
     }
   });
 });
