@@ -1,10 +1,12 @@
 /**
- * TileManager - Manages tiles (webviews) and their layout
+ * TileManager - Manages tiles using WebContentsView via IPC
+ *
+ * This version uses TileProxy objects to represent tiles that are
+ * actually WebContentsViews managed by the main process.
  */
 
 import {
   LayoutNode,
-  LeafNode,
   SplitDirection,
   Bounds,
   TileBounds,
@@ -19,56 +21,161 @@ import {
   swapTiles,
   adjustSplitInDirection,
 } from './bsp';
+import { TileProxy, SleepingTile, createTileProxy } from './tile-proxy';
 import type { Workspace, TileState, SerializedLayoutNode } from '@shared/workspace';
+import type { BoundsUpdate } from '@shared/tile-ipc';
 import { TILE_LIFECYCLE } from '@shared/constants';
-
-export interface Tile {
-  id: string;
-  webview: Electron.WebviewTag;
-  url: string;
-  title: string;
-  isMuted: boolean;
-  isAudioPlaying: boolean;
-  audioIndicator: HTMLElement | null;
-  errorOverlay: HTMLElement | null;
-  hasError: boolean;
-}
-
-export interface SleepingTile {
-  id: string;
-  url: string;
-  title: string;
-  snapshot: string | null; // Base64 data URL
-  element: HTMLElement; // Placeholder element showing snapshot
-}
 
 export class TileManager {
   private container: HTMLElement;
-  private layout: LayoutNode;
-  private tiles: Map<string, Tile> = new Map();
+  private layout!: LayoutNode;
+  private tileProxies: Map<string, TileProxy> = new Map();
   private sleepingTiles: Map<string, SleepingTile> = new Map();
   private focusedTileId: string | null = null;
   private fullscreenTileId: string | null = null;
+
+  // UI overlay elements
+  private audioIndicators: Map<string, HTMLElement> = new Map();
+  private errorOverlays: Map<string, HTMLElement> = new Map();
+  private focusIndicators: Map<string, HTMLElement> = new Map();
+
+  // Callbacks
   private onFocusChange?: (tileId: string) => void;
   private onUrlChange?: (tileId: string, url: string) => void;
   private onTitleChange?: (tileId: string, title: string) => void;
+  private onStateChange?: () => void;
+
+  // Event unsubscribe functions
+  private eventUnsubscribers: Array<() => void> = [];
 
   constructor(container: HTMLElement) {
     this.container = container;
 
-    // Create initial single tile
+    // Subscribe to main process events
+    this.setupEventListeners();
+
+    // Handle window resize
+    window.addEventListener('resize', () => this.updateLayout());
+  }
+
+  /**
+   * Initialize with a default tile (async)
+   */
+  async initialize(): Promise<void> {
     const initialLeaf = createLeaf();
     this.layout = initialLeaf;
 
-    // Create the webview for initial tile
-    this.createTileWebview(initialLeaf.tileId, 'https://www.google.com');
+    // Create the tile via IPC
+    await this.createTile(initialLeaf.tileId, 'https://www.google.com');
     this.focusedTileId = initialLeaf.tileId;
 
     // Initial layout
     this.updateLayout();
+  }
 
-    // Handle window resize
-    window.addEventListener('resize', () => this.updateLayout());
+  /**
+   * Set up event listeners for main process events
+   */
+  private setupEventListeners(): void {
+    const { tiles } = window.tilora;
+
+    // Navigation state updates
+    this.eventUnsubscribers.push(
+      tiles.onNavigationState((data) => {
+        // data.tileId is the view ID from main process
+        const tileId = this.getTileIdByViewId(data.tileId) || data.tileId;
+        const proxy = this.tileProxies.get(tileId);
+        if (proxy) {
+          proxy.url = data.url;
+          proxy.title = data.title;
+          proxy.canGoBack = data.canGoBack;
+          proxy.canGoForward = data.canGoForward;
+          proxy.isLoading = data.isLoading;
+
+          if (tileId === this.focusedTileId) {
+            this.onUrlChange?.(tileId, data.url);
+          }
+        }
+      })
+    );
+
+    // Title updates
+    this.eventUnsubscribers.push(
+      tiles.onTitleUpdated((data) => {
+        const tileId = this.getTileIdByViewId(data.tileId) || data.tileId;
+        const proxy = this.tileProxies.get(tileId);
+        if (proxy) {
+          proxy.title = data.title;
+          this.onTitleChange?.(tileId, data.title);
+        }
+      })
+    );
+
+    // Audio state updates
+    this.eventUnsubscribers.push(
+      tiles.onAudioState((data) => {
+        const tileId = this.getTileIdByViewId(data.tileId) || data.tileId;
+        const proxy = this.tileProxies.get(tileId);
+        if (proxy) {
+          proxy.isAudioPlaying = data.isPlaying;
+          this.updateAudioIndicator(tileId);
+        }
+      })
+    );
+
+    // Load error updates
+    this.eventUnsubscribers.push(
+      tiles.onLoadError((data) => {
+        const tileId = this.getTileIdByViewId(data.tileId) || data.tileId;
+        const proxy = this.tileProxies.get(tileId);
+        if (proxy) {
+          proxy.hasError = true;
+          proxy.errorCode = data.errorCode;
+          proxy.errorMessage = data.errorDescription;
+          this.showErrorOverlay(tileId, data.errorDescription);
+        }
+      })
+    );
+
+    // Focus updates (from main process detecting clicks in views)
+    this.eventUnsubscribers.push(
+      tiles.onFocused((data) => {
+        // data.tileId is the view ID from main process, need to find our tile ID
+        const tileId = this.getTileIdByViewId(data.tileId) || data.tileId;
+        if (tileId !== this.focusedTileId) {
+          this.focusTile(tileId);
+        }
+      })
+    );
+
+    // Fullscreen updates
+    this.eventUnsubscribers.push(
+      tiles.onFullscreen((data) => {
+        const tileId = this.getTileIdByViewId(data.tileId) || data.tileId;
+        this.handleTileFullscreen(tileId, data.isFullscreen);
+      })
+    );
+
+    // Favicon updates
+    this.eventUnsubscribers.push(
+      tiles.onFavicon((data) => {
+        const tileId = this.getTileIdByViewId(data.tileId) || data.tileId;
+        const proxy = this.tileProxies.get(tileId);
+        if (proxy) {
+          proxy.faviconUrl = data.faviconUrl;
+        }
+      })
+    );
+  }
+
+  /**
+   * Clean up event listeners
+   */
+  destroy(): void {
+    for (const unsubscribe of this.eventUnsubscribers) {
+      unsubscribe();
+    }
+    this.eventUnsubscribers = [];
   }
 
   setCallbacks(callbacks: {
@@ -81,168 +188,126 @@ export class TileManager {
     this.onTitleChange = callbacks.onTitleChange;
   }
 
-  private createTileWebview(tileId: string, url: string, muted: boolean = false): Tile {
-    const webview = document.createElement('webview') as Electron.WebviewTag;
-
-    // Style for absolute positioning
-    webview.style.position = 'absolute';
-    webview.style.border = '1px solid #404040';
-    webview.style.boxSizing = 'border-box';
-
-    // Webview attributes
-    webview.setAttribute('allowpopups', 'true');
-    webview.setAttribute('plugins', 'true');
-    webview.setAttribute('webpreferences', 'contextIsolation=yes, autoplayPolicy=no-user-gesture-required');
-
-    // Inject fullscreen override when DOM is ready
-    webview.addEventListener('dom-ready', () => {
-      this.injectFullscreenOverride(webview);
-
-      // Apply mute state
-      if (muted) {
-        webview.setAudioMuted(true);
-      }
-    });
-
-    // Handle fullscreen within tile (not monitor)
-    webview.addEventListener('enter-html-full-screen', () => {
-      this.handleTileFullscreen(tileId, true);
-    });
-
-    webview.addEventListener('leave-html-full-screen', () => {
-      this.handleTileFullscreen(tileId, false);
-    });
-
-    // Add click handler to focus this tile
-    webview.addEventListener('focus', () => this.focusTile(tileId));
-    webview.addEventListener('click', () => this.focusTile(tileId));
-
-    // Navigation events
-    webview.addEventListener('did-navigate', ((e: CustomEvent) => {
-      const tile = this.tiles.get(tileId);
-      if (tile) {
-        tile.url = webview.getURL();
-        this.onUrlChange?.(tileId, tile.url);
-      }
-    }) as EventListener);
-
-    webview.addEventListener('did-navigate-in-page', (() => {
-      const tile = this.tiles.get(tileId);
-      if (tile) {
-        tile.url = webview.getURL();
-        this.onUrlChange?.(tileId, tile.url);
-      }
-    }) as EventListener);
-
-    webview.addEventListener('page-title-updated', ((e: CustomEvent) => {
-      const title = e.detail?.title || webview.getTitle?.() || '';
-      const tile = this.tiles.get(tileId);
-      if (tile) {
-        tile.title = title;
-      }
-      this.onTitleChange?.(tileId, title);
-    }) as EventListener);
-
-    // Audio state change detection
-    webview.addEventListener('media-started-playing', () => {
-      const tile = this.tiles.get(tileId);
-      if (tile) {
-        tile.isAudioPlaying = true;
-        this.updateAudioIndicator(tile);
-      }
-    });
-
-    webview.addEventListener('media-paused', () => {
-      const tile = this.tiles.get(tileId);
-      if (tile) {
-        tile.isAudioPlaying = false;
-        this.updateAudioIndicator(tile);
-      }
-    });
-
-    // Error handling
-    webview.addEventListener('did-fail-load', ((e: CustomEvent) => {
-      const tile = this.tiles.get(tileId);
-      if (tile) {
-        const errorCode = e.detail?.errorCode ?? (e as any).errorCode;
-        const errorDescription = e.detail?.errorDescription ?? (e as any).errorDescription ?? 'Unknown error';
-        // Ignore aborted loads (user navigation)
-        if (errorCode !== -3) {
-          this.showErrorOverlay(tile, errorDescription);
-        }
-      }
-    }) as EventListener);
-
-    webview.addEventListener('did-start-loading', () => {
-      const tile = this.tiles.get(tileId);
-      if (tile) {
-        this.hideErrorOverlay(tile);
-      }
-    });
-
-    // Add to container
-    this.container.appendChild(webview);
-
-    // Load URL
-    webview.src = url;
-
-    const tile: Tile = {
-      id: tileId,
-      webview,
-      url,
-      title: 'New Tab',
-      isMuted: muted,
-      isAudioPlaying: false,
-      audioIndicator: null,
-      errorOverlay: null,
-      hasError: false,
-    };
-    this.tiles.set(tileId, tile);
-
-    return tile;
+  setOnStateChange(callback: () => void): void {
+    this.onStateChange = callback;
   }
 
-  private removeTileWebview(tileId: string): void {
-    const tile = this.tiles.get(tileId);
-    if (tile) {
-      // Remove audio indicator if present
-      if (tile.audioIndicator) {
-        tile.audioIndicator.remove();
-      }
-      // Remove error overlay if present
-      if (tile.errorOverlay) {
-        tile.errorOverlay.remove();
-      }
-      tile.webview.remove();
-      this.tiles.delete(tileId);
+  /**
+   * Create a tile via IPC
+   */
+  private async createTile(tileId: string, url: string, muted: boolean = false): Promise<void> {
+    const response = await window.tilora.tiles.create(url);
+
+    if (!response.success) {
+      console.error('Failed to create tile:', response.error);
+      return;
     }
+
+    // Create proxy with the ID from main process
+    const proxy = createTileProxy(response.tileId, url);
+    proxy.isMuted = muted;
+
+    // Map our layout tileId to the actual view tileId
+    // For simplicity, we'll use the response tileId directly
+    this.tileProxies.set(tileId, proxy);
+
+    // Store the mapping for later use
+    (proxy as TileProxy & { viewId: string }).viewId = response.tileId;
+
+    // Apply mute state if needed
+    if (muted) {
+      await window.tilora.tiles.setMuted(response.tileId, true);
+    }
+
+    // Create focus indicator element
+    this.createFocusIndicator(tileId);
+  }
+
+  /**
+   * Get the view ID for a proxy (the ID used by main process)
+   */
+  private getViewId(tileId: string): string {
+    const proxy = this.tileProxies.get(tileId);
+    return (proxy as TileProxy & { viewId?: string })?.viewId || tileId;
+  }
+
+  /**
+   * Find tile ID by view ID (reverse lookup)
+   */
+  private getTileIdByViewId(viewId: string): string | null {
+    for (const [tileId, proxy] of this.tileProxies) {
+      if ((proxy as TileProxy & { viewId?: string })?.viewId === viewId) {
+        return tileId;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Remove a tile
+   */
+  private async removeTile(tileId: string): Promise<void> {
+    const viewId = this.getViewId(tileId);
+    await window.tilora.tiles.destroy(viewId);
+
+    // Remove UI elements
+    this.audioIndicators.get(tileId)?.remove();
+    this.audioIndicators.delete(tileId);
+    this.errorOverlays.get(tileId)?.remove();
+    this.errorOverlays.delete(tileId);
+    this.focusIndicators.get(tileId)?.remove();
+    this.focusIndicators.delete(tileId);
+
+    this.tileProxies.delete(tileId);
+  }
+
+  /**
+   * Create focus indicator overlay element
+   * Note: This may not be visible with WebContentsViews rendering on top
+   */
+  private createFocusIndicator(tileId: string): void {
+    const indicator = document.createElement('div');
+    indicator.className = 'focus-indicator';
+    indicator.dataset.tileId = tileId;
+    indicator.style.cssText = `
+      position: absolute;
+      pointer-events: none;
+      box-sizing: border-box;
+      border: 2px solid transparent;
+    `;
+    this.container.appendChild(indicator);
+    this.focusIndicators.set(tileId, indicator);
   }
 
   /**
    * Update or create the audio indicator for a tile
    */
-  private updateAudioIndicator(tile: Tile): void {
-    const shouldShow = tile.isAudioPlaying || tile.isMuted;
+  private updateAudioIndicator(tileId: string): void {
+    const proxy = this.tileProxies.get(tileId);
+    if (!proxy) return;
+
+    const shouldShow = proxy.isAudioPlaying || proxy.isMuted;
 
     if (!shouldShow) {
-      // Remove indicator if not needed
-      if (tile.audioIndicator) {
-        tile.audioIndicator.remove();
-        tile.audioIndicator = null;
+      const indicator = this.audioIndicators.get(tileId);
+      if (indicator) {
+        indicator.remove();
+        this.audioIndicators.delete(tileId);
       }
       return;
     }
 
-    // Create indicator if it doesn't exist
-    if (!tile.audioIndicator) {
-      tile.audioIndicator = this.createAudioIndicator(tile.id);
-      this.container.appendChild(tile.audioIndicator);
+    let indicator = this.audioIndicators.get(tileId);
+    if (!indicator) {
+      indicator = this.createAudioIndicatorElement(tileId);
+      this.container.appendChild(indicator);
+      this.audioIndicators.set(tileId, indicator);
     }
 
     // Update icon based on state
-    const icon = tile.audioIndicator.querySelector('.audio-icon') as HTMLElement;
+    const icon = indicator.querySelector('.audio-icon') as HTMLElement;
     if (icon) {
-      if (tile.isMuted) {
+      if (proxy.isMuted) {
         icon.textContent = '🔇';
         icon.title = 'Muted (click to unmute)';
       } else {
@@ -252,13 +317,13 @@ export class TileManager {
     }
 
     // Position the indicator
-    this.positionAudioIndicator(tile);
+    this.positionAudioIndicator(tileId);
   }
 
   /**
-   * Create the audio indicator element
+   * Create audio indicator element
    */
-  private createAudioIndicator(tileId: string): HTMLElement {
+  private createAudioIndicatorElement(tileId: string): HTMLElement {
     const indicator = document.createElement('div');
     indicator.className = 'audio-indicator';
     indicator.dataset.tileId = tileId;
@@ -280,102 +345,103 @@ export class TileManager {
     icon.style.fontSize = '14px';
     indicator.appendChild(icon);
 
-    // Click to toggle mute
     indicator.addEventListener('click', (e) => {
       e.stopPropagation();
-      this.toggleMute(tileId);
+      void this.toggleMute(tileId);
     });
 
     return indicator;
   }
 
   /**
-   * Position the audio indicator relative to its tile
+   * Position audio indicator in the top-right area of the tile
+   * Note: May not be visible with WebContentsViews on top
    */
-  private positionAudioIndicator(tile: Tile): void {
-    if (!tile.audioIndicator) return;
+  private positionAudioIndicator(tileId: string): void {
+    const indicator = this.audioIndicators.get(tileId);
+    const proxy = this.tileProxies.get(tileId);
+    if (!indicator || !proxy) return;
 
-    // Get the webview's position from its style (already relative to container)
-    const left = parseFloat(tile.webview.style.left) || 0;
-    const top = parseFloat(tile.webview.style.top) || 0;
-    const width = parseFloat(tile.webview.style.width) || 0;
-
-    // Position indicator in top-right corner of tile
-    tile.audioIndicator.style.left = `${left + width - 36}px`;
-    tile.audioIndicator.style.top = `${top + 6}px`;
+    const { bounds } = proxy;
+    indicator.style.left = `${bounds.x + bounds.width - 40}px`;
+    indicator.style.top = `${bounds.y + 6}px`;
   }
 
   /**
    * Toggle mute state for a tile
    */
-  toggleMute(tileId?: string): void {
+  async toggleMute(tileId?: string): Promise<void> {
     const targetId = tileId || this.focusedTileId;
     if (!targetId) return;
 
-    const tile = this.tiles.get(targetId);
-    if (!tile) return;
+    const proxy = this.tileProxies.get(targetId);
+    if (!proxy) return;
 
-    tile.isMuted = !tile.isMuted;
-    tile.webview.setAudioMuted(tile.isMuted);
-    this.updateAudioIndicator(tile);
+    proxy.isMuted = !proxy.isMuted;
+    const viewId = this.getViewId(targetId);
+    await window.tilora.tiles.setMuted(viewId, proxy.isMuted);
+    this.updateAudioIndicator(targetId);
     this.notifyStateChange();
   }
 
   /**
    * Mute a specific tile
    */
-  muteTile(tileId: string): void {
-    const tile = this.tiles.get(tileId);
-    if (!tile) return;
+  async muteTile(tileId: string): Promise<void> {
+    const proxy = this.tileProxies.get(tileId);
+    if (!proxy) return;
 
-    tile.isMuted = true;
-    tile.webview.setAudioMuted(true);
-    this.updateAudioIndicator(tile);
+    proxy.isMuted = true;
+    const viewId = this.getViewId(tileId);
+    await window.tilora.tiles.setMuted(viewId, true);
+    this.updateAudioIndicator(tileId);
     this.notifyStateChange();
   }
 
   /**
    * Unmute a specific tile
    */
-  unmuteTile(tileId: string): void {
-    const tile = this.tiles.get(tileId);
-    if (!tile) return;
+  async unmuteTile(tileId: string): Promise<void> {
+    const proxy = this.tileProxies.get(tileId);
+    if (!proxy) return;
 
-    tile.isMuted = false;
-    tile.webview.setAudioMuted(false);
-    this.updateAudioIndicator(tile);
+    proxy.isMuted = false;
+    const viewId = this.getViewId(tileId);
+    await window.tilora.tiles.setMuted(viewId, false);
+    this.updateAudioIndicator(tileId);
     this.notifyStateChange();
   }
 
   /**
    * Mute all tiles except the focused one
    */
-  muteAllExceptFocused(): void {
-    for (const [tileId, tile] of this.tiles) {
+  async muteAllExceptFocused(): Promise<void> {
+    const promises: Promise<void>[] = [];
+    for (const [tileId, proxy] of this.tileProxies) {
       if (tileId === this.focusedTileId) {
-        // Ensure focused tile is unmuted
-        tile.isMuted = false;
-        tile.webview.setAudioMuted(false);
-        this.updateAudioIndicator(tile);
+        proxy.isMuted = false;
+        promises.push(window.tilora.tiles.setMuted(this.getViewId(tileId), false).then(() => {}));
       } else {
-        // Mute all other tiles
-        tile.isMuted = true;
-        tile.webview.setAudioMuted(true);
-        this.updateAudioIndicator(tile);
+        proxy.isMuted = true;
+        promises.push(window.tilora.tiles.setMuted(this.getViewId(tileId), true).then(() => {}));
       }
+      this.updateAudioIndicator(tileId);
     }
+    await Promise.all(promises);
     this.notifyStateChange();
   }
 
   /**
    * Unmute all tiles
    */
-  unmuteAll(): void {
-    for (const [, tile] of this.tiles) {
-      tile.isMuted = false;
-      tile.webview.setAudioMuted(false);
-      this.updateAudioIndicator(tile);
+  async unmuteAll(): Promise<void> {
+    const promises: Promise<void>[] = [];
+    for (const [tileId, proxy] of this.tileProxies) {
+      proxy.isMuted = false;
+      promises.push(window.tilora.tiles.setMuted(this.getViewId(tileId), false).then(() => {}));
+      this.updateAudioIndicator(tileId);
     }
+    await Promise.all(promises);
     this.notifyStateChange();
   }
 
@@ -383,47 +449,55 @@ export class TileManager {
    * Check if focused tile is muted
    */
   isFocusedTileMuted(): boolean {
-    const tile = this.getFocusedTile();
-    return tile?.isMuted ?? false;
+    if (!this.focusedTileId) return false;
+    const proxy = this.tileProxies.get(this.focusedTileId);
+    return proxy?.isMuted ?? false;
   }
 
   /**
    * Show error overlay on a tile
    */
-  private showErrorOverlay(tile: Tile, errorMessage: string): void {
-    tile.hasError = true;
+  private showErrorOverlay(tileId: string, errorMessage: string): void {
+    const proxy = this.tileProxies.get(tileId);
+    if (!proxy) return;
 
-    // Create overlay if it doesn't exist
-    if (!tile.errorOverlay) {
-      tile.errorOverlay = this.createErrorOverlay(tile.id);
-      this.container.appendChild(tile.errorOverlay);
+    proxy.hasError = true;
+
+    let overlay = this.errorOverlays.get(tileId);
+    if (!overlay) {
+      overlay = this.createErrorOverlayElement(tileId);
+      this.container.appendChild(overlay);
+      this.errorOverlays.set(tileId, overlay);
     }
 
-    // Update error message
-    const messageEl = tile.errorOverlay.querySelector('.error-message') as HTMLElement;
+    const messageEl = overlay.querySelector('.error-message') as HTMLElement;
     if (messageEl) {
       messageEl.textContent = errorMessage;
     }
 
-    // Position the overlay
-    this.positionErrorOverlay(tile);
-    tile.errorOverlay.style.display = 'flex';
+    this.positionErrorOverlay(tileId);
+    overlay.style.display = 'flex';
   }
 
   /**
    * Hide error overlay
    */
-  private hideErrorOverlay(tile: Tile): void {
-    tile.hasError = false;
-    if (tile.errorOverlay) {
-      tile.errorOverlay.style.display = 'none';
+  private hideErrorOverlay(tileId: string): void {
+    const proxy = this.tileProxies.get(tileId);
+    if (proxy) {
+      proxy.hasError = false;
+    }
+
+    const overlay = this.errorOverlays.get(tileId);
+    if (overlay) {
+      overlay.style.display = 'none';
     }
   }
 
   /**
    * Create error overlay element
    */
-  private createErrorOverlay(tileId: string): HTMLElement {
+  private createErrorOverlayElement(tileId: string): HTMLElement {
     const overlay = document.createElement('div');
     overlay.className = 'error-overlay';
     overlay.dataset.tileId = tileId;
@@ -446,40 +520,24 @@ export class TileManager {
 
     const title = document.createElement('div');
     title.textContent = 'Page Load Failed';
-    title.style.cssText = `
-      color: #fff;
-      font-size: 18px;
-      font-weight: bold;
-    `;
+    title.style.cssText = `color: #fff; font-size: 18px; font-weight: bold;`;
     overlay.appendChild(title);
 
     const message = document.createElement('div');
     message.className = 'error-message';
-    message.style.cssText = `
-      color: #888;
-      font-size: 14px;
-      text-align: center;
-      max-width: 300px;
-    `;
+    message.style.cssText = `color: #888; font-size: 14px; text-align: center; max-width: 300px;`;
     overlay.appendChild(message);
 
     const retryBtn = document.createElement('button');
     retryBtn.textContent = 'Retry';
     retryBtn.style.cssText = `
-      background: #0078d4;
-      color: white;
-      border: none;
-      padding: 8px 24px;
-      border-radius: 4px;
-      cursor: pointer;
-      font-size: 14px;
-      margin-top: 8px;
+      background: #0078d4; color: white; border: none;
+      padding: 8px 24px; border-radius: 4px; cursor: pointer;
+      font-size: 14px; margin-top: 8px;
     `;
     retryBtn.addEventListener('click', () => {
-      const tile = this.tiles.get(tileId);
-      if (tile) {
-        tile.webview.reload();
-      }
+      this.hideErrorOverlay(tileId);
+      void window.tilora.tiles.reload(this.getViewId(tileId));
     });
     overlay.appendChild(retryBtn);
 
@@ -487,21 +545,32 @@ export class TileManager {
   }
 
   /**
-   * Position error overlay to match tile bounds
+   * Position error overlay
    */
-  private positionErrorOverlay(tile: Tile): void {
-    if (!tile.errorOverlay) return;
+  private positionErrorOverlay(tileId: string): void {
+    const overlay = this.errorOverlays.get(tileId);
+    const proxy = this.tileProxies.get(tileId);
+    if (!overlay || !proxy) return;
 
-    // Get the webview's position from its style (already relative to container)
-    const left = tile.webview.style.left;
-    const top = tile.webview.style.top;
-    const width = tile.webview.style.width;
-    const height = tile.webview.style.height;
+    const { bounds } = proxy;
+    overlay.style.left = `${bounds.x}px`;
+    overlay.style.top = `${bounds.y}px`;
+    overlay.style.width = `${bounds.width}px`;
+    overlay.style.height = `${bounds.height}px`;
+  }
 
-    tile.errorOverlay.style.left = left;
-    tile.errorOverlay.style.top = top;
-    tile.errorOverlay.style.width = width;
-    tile.errorOverlay.style.height = height;
+  /**
+   * Convert local bounds to window bounds for WebContentsView positioning
+   * WebContentsViews are positioned relative to window content area
+   * Note: Main process adds toolbar offset, so we just pass local bounds
+   */
+  private toWindowBounds(localBounds: Bounds): Bounds {
+    return {
+      x: Math.round(localBounds.x),
+      y: Math.round(localBounds.y),
+      width: Math.round(localBounds.width),
+      height: Math.round(localBounds.height),
+    };
   }
 
   /**
@@ -509,6 +578,7 @@ export class TileManager {
    */
   updateLayout(): void {
     const containerRect = this.container.getBoundingClientRect();
+
     const containerBounds: Bounds = {
       x: 0,
       y: 0,
@@ -518,33 +588,40 @@ export class TileManager {
 
     const tileBounds = calculateBounds(this.layout, containerBounds);
 
+    // Collect bounds updates for batch IPC call
+    const boundsUpdates: BoundsUpdate[] = [];
+
     for (const { tileId, bounds } of tileBounds) {
-      const tile = this.tiles.get(tileId);
+      const proxy = this.tileProxies.get(tileId);
       const sleepingTile = this.sleepingTiles.get(tileId);
 
-      if (tile) {
-        // Active tile - check if it should sleep
+      if (proxy) {
+        // Update proxy bounds (full bounds for overlay positioning)
+        proxy.bounds = bounds;
+
+        // Check if tile should sleep
         if (this.shouldSleep(bounds) && tileId !== this.focusedTileId) {
-          // Put tile to sleep (async, but we don't wait)
-          this.sleepTile(tileId).then(() => {
-            // Update bounds for the new placeholder
-            const st = this.sleepingTiles.get(tileId);
-            if (st) {
-              this.applyBoundsToElement(st.element, bounds);
-            }
-          });
+          void this.sleepTile(tileId);
         } else {
-          this.applyBounds(tile.webview, bounds);
+          // Add to batch update with window bounds for the view
+          boundsUpdates.push({
+            id: this.getViewId(tileId),
+            bounds: this.toWindowBounds(bounds),
+          });
         }
       } else if (sleepingTile) {
-        // Sleeping tile - check if it should wake
+        // Check if tile should wake
         if (!this.shouldSleep(bounds)) {
-          // Wake the tile if it's now large enough
-          this.wakeTile(tileId);
-          const awakenedTile = this.tiles.get(tileId);
-          if (awakenedTile) {
-            this.applyBounds(awakenedTile.webview, bounds);
-          }
+          void this.wakeTile(tileId).then(() => {
+            const awakened = this.tileProxies.get(tileId);
+            if (awakened) {
+              awakened.bounds = bounds;
+              void window.tilora.tiles.setBounds([{
+                id: this.getViewId(tileId),
+                bounds: this.toWindowBounds(bounds),
+              }]);
+            }
+          });
         } else {
           // Update placeholder position
           this.applyBoundsToElement(sleepingTile.element, bounds);
@@ -552,35 +629,22 @@ export class TileManager {
       }
     }
 
-    // Update focus indicator
-    this.updateFocusIndicator();
+    // Send batch bounds update to main process
+    if (boundsUpdates.length > 0) {
+      void window.tilora.tiles.setBounds(boundsUpdates);
+    }
+
+    // Update focus indicators
+    this.updateFocusIndicators();
 
     // Update audio indicator positions
-    this.updateAudioIndicatorPositions();
+    for (const tileId of this.audioIndicators.keys()) {
+      this.positionAudioIndicator(tileId);
+    }
 
     // Update error overlay positions
-    this.updateErrorOverlayPositions();
-  }
-
-  /**
-   * Update all audio indicator positions
-   */
-  private updateAudioIndicatorPositions(): void {
-    for (const [, tile] of this.tiles) {
-      if (tile.audioIndicator) {
-        this.positionAudioIndicator(tile);
-      }
-    }
-  }
-
-  /**
-   * Update all error overlay positions
-   */
-  private updateErrorOverlayPositions(): void {
-    for (const [, tile] of this.tiles) {
-      if (tile.errorOverlay && tile.hasError) {
-        this.positionErrorOverlay(tile);
-      }
+    for (const tileId of this.errorOverlays.keys()) {
+      this.positionErrorOverlay(tileId);
     }
   }
 
@@ -591,19 +655,22 @@ export class TileManager {
     element.style.height = `${bounds.height}px`;
   }
 
-  private applyBounds(webview: Electron.WebviewTag, bounds: Bounds): void {
-    webview.style.left = `${bounds.x}px`;
-    webview.style.top = `${bounds.y}px`;
-    webview.style.width = `${bounds.width}px`;
-    webview.style.height = `${bounds.height}px`;
-  }
+  private updateFocusIndicators(): void {
+    for (const [tileId, indicator] of this.focusIndicators) {
+      const proxy = this.tileProxies.get(tileId);
+      if (!proxy) continue;
 
-  private updateFocusIndicator(): void {
-    for (const [tileId, tile] of this.tiles) {
+      const { bounds } = proxy;
+      indicator.style.left = `${bounds.x}px`;
+      indicator.style.top = `${bounds.y}px`;
+      indicator.style.width = `${bounds.width}px`;
+      indicator.style.height = `${bounds.height}px`;
+
+      // Note: Border may not be visible with WebContentsViews on top
       if (tileId === this.focusedTileId) {
-        tile.webview.style.border = '2px solid #0078d4';
+        indicator.style.borderColor = '#0078d4';
       } else {
-        tile.webview.style.border = '1px solid #404040';
+        indicator.style.borderColor = 'transparent';
       }
     }
   }
@@ -611,7 +678,7 @@ export class TileManager {
   /**
    * Split the focused tile
    */
-  split(direction: SplitDirection): string | null {
+  async split(direction: SplitDirection): Promise<string | null> {
     if (!this.focusedTileId) return null;
 
     const result = splitNode(this.layout, this.focusedTileId, direction);
@@ -619,8 +686,8 @@ export class TileManager {
 
     this.layout = result.newRoot;
 
-    // Create webview for new tile
-    this.createTileWebview(result.newTileId, 'https://www.google.com');
+    // Create tile for new split
+    await this.createTile(result.newTileId, 'https://www.google.com');
 
     // Update layout
     this.updateLayout();
@@ -634,7 +701,7 @@ export class TileManager {
   /**
    * Close a tile
    */
-  closeTile(tileId?: string): boolean {
+  async closeTile(tileId?: string): Promise<boolean> {
     const targetId = tileId || this.focusedTileId;
     if (!targetId) return false;
 
@@ -644,9 +711,9 @@ export class TileManager {
     const newLayout = removeNode(this.layout, targetId);
     if (!newLayout) return false;
 
-    // Remove the webview or sleeping tile placeholder
-    if (this.tiles.has(targetId)) {
-      this.removeTileWebview(targetId);
+    // Remove the tile
+    if (this.tileProxies.has(targetId)) {
+      await this.removeTile(targetId);
     } else if (this.sleepingTiles.has(targetId)) {
       this.removeSleepingTile(targetId);
     }
@@ -673,37 +740,41 @@ export class TileManager {
   focusTile(tileId: string): void {
     // Check if tile is sleeping and wake it first
     if (this.sleepingTiles.has(tileId)) {
-      this.wakeTile(tileId);
+      void this.wakeTile(tileId);
     }
 
-    if (!this.tiles.has(tileId)) return;
+    if (!this.tileProxies.has(tileId)) return;
 
     this.focusedTileId = tileId;
-    this.updateFocusIndicator();
+    this.updateFocusIndicators();
     this.onFocusChange?.(tileId);
 
-    // Focus the webview
-    const tile = this.tiles.get(tileId);
-    tile?.webview.focus();
+    // Focus the view in main process
+    void window.tilora.tiles.focus(this.getViewId(tileId));
 
-    // Update layout to position the newly awakened tile
+    // Update URL bar with this tile's URL
+    const proxy = this.tileProxies.get(tileId);
+    if (proxy) {
+      this.onUrlChange?.(tileId, proxy.url);
+    }
+
     this.updateLayout();
   }
 
   /**
-   * Get focused tile
+   * Get focused tile proxy
    */
-  getFocusedTile(): Tile | null {
+  getFocusedTile(): TileProxy | null {
     if (!this.focusedTileId) return null;
-    return this.tiles.get(this.focusedTileId) || null;
+    return this.tileProxies.get(this.focusedTileId) || null;
   }
 
   /**
    * Navigate focused tile to URL
    */
-  navigate(url: string): void {
-    const tile = this.getFocusedTile();
-    if (!tile) return;
+  async navigate(url: string): Promise<void> {
+    const proxy = this.getFocusedTile();
+    if (!proxy) return;
 
     let finalUrl = url.trim();
     if (!finalUrl.match(/^[a-zA-Z][a-zA-Z0-9+.-]*:/)) {
@@ -714,50 +785,53 @@ export class TileManager {
       }
     }
 
-    tile.webview.src = finalUrl;
+    if (this.focusedTileId) {
+      const viewId = this.getViewId(this.focusedTileId);
+      await window.tilora.tiles.navigate(viewId, finalUrl);
+    }
   }
 
   /**
    * Navigation controls for focused tile
    */
-  goBack(): void {
-    const tile = this.getFocusedTile();
-    if (tile?.webview.canGoBack()) {
-      tile.webview.goBack();
-    }
+  async goBack(): Promise<void> {
+    if (!this.focusedTileId) return;
+    const viewId = this.getViewId(this.focusedTileId);
+    await window.tilora.tiles.goBack(viewId);
   }
 
-  goForward(): void {
-    const tile = this.getFocusedTile();
-    if (tile?.webview.canGoForward()) {
-      tile.webview.goForward();
-    }
+  async goForward(): Promise<void> {
+    if (!this.focusedTileId) return;
+    const viewId = this.getViewId(this.focusedTileId);
+    await window.tilora.tiles.goForward(viewId);
   }
 
-  reload(): void {
-    const tile = this.getFocusedTile();
-    if (tile) {
-      if (tile.webview.isLoading()) {
-        tile.webview.stop();
-      } else {
-        tile.webview.reload();
-      }
+  async reload(): Promise<void> {
+    if (!this.focusedTileId) return;
+    const proxy = this.tileProxies.get(this.focusedTileId);
+    if (!proxy) return;
+
+    const viewId = this.getViewId(this.focusedTileId);
+    if (proxy.isLoading) {
+      await window.tilora.tiles.stop(viewId);
+    } else {
+      await window.tilora.tiles.reload(viewId);
     }
   }
 
   canGoBack(): boolean {
-    const tile = this.getFocusedTile();
-    return tile?.webview.canGoBack() || false;
+    const proxy = this.getFocusedTile();
+    return proxy?.canGoBack || false;
   }
 
   canGoForward(): boolean {
-    const tile = this.getFocusedTile();
-    return tile?.webview.canGoForward() || false;
+    const proxy = this.getFocusedTile();
+    return proxy?.canGoForward || false;
   }
 
   isLoading(): boolean {
-    const tile = this.getFocusedTile();
-    return tile?.webview.isLoading() || false;
+    const proxy = this.getFocusedTile();
+    return proxy?.isLoading || false;
   }
 
   /**
@@ -771,8 +845,8 @@ export class TileManager {
    * Get current URL of focused tile
    */
   getCurrentUrl(): string {
-    const tile = this.getFocusedTile();
-    return tile?.url || '';
+    const proxy = this.getFocusedTile();
+    return proxy?.url || '';
   }
 
   /**
@@ -816,34 +890,16 @@ export class TileManager {
 
     if (!adjacentId) return false;
 
-    // Swap the tiles in the layout tree
+    // Swap the tiles in the layout tree (this swaps the tileIds at their positions)
     this.layout = swapTiles(this.layout, this.focusedTileId, adjacentId);
 
-    // Swap the tile data in our map
-    const tile1 = this.tiles.get(this.focusedTileId);
-    const tile2 = this.tiles.get(adjacentId);
-
-    if (tile1 && tile2) {
-      // Swap the IDs in the tile objects
-      tile1.id = adjacentId;
-      tile2.id = this.focusedTileId;
-
-      // Update the map
-      this.tiles.set(adjacentId, tile1);
-      this.tiles.set(this.focusedTileId, tile2);
-
-      // Update focused tile ID to follow the original tile
-      this.focusedTileId = adjacentId;
-    }
-
+    // Update layout to recalculate bounds - tiles will get new positions
     this.updateLayout();
     return true;
   }
 
   /**
    * Resize the focused tile in a specific direction
-   * @param direction - Direction to resize (left/right/up/down)
-   * @param delta - Amount to resize (positive = grow in that direction)
    */
   resizeInDirection(direction: Direction, delta: number = 0.05): boolean {
     if (!this.focusedTileId) return false;
@@ -860,12 +916,12 @@ export class TileManager {
     const tiles: TileState[] = [];
 
     // Include active tiles
-    for (const [id, tile] of this.tiles) {
+    for (const [id, proxy] of this.tileProxies) {
       tiles.push({
         id,
-        url: tile.url,
-        title: tile.title,
-        isMuted: tile.isMuted,
+        url: proxy.url,
+        title: proxy.title,
+        isMuted: proxy.isMuted,
       });
     }
 
@@ -875,7 +931,7 @@ export class TileManager {
         id,
         url: sleepingTile.url,
         title: sleepingTile.title,
-        isMuted: false, // Sleeping tiles don't have audio
+        isMuted: sleepingTile.isMuted,
       });
     }
 
@@ -893,24 +949,24 @@ export class TileManager {
   /**
    * Restore from a Workspace object
    */
-  restore(workspace: Workspace): void {
+  async restore(workspace: Workspace): Promise<void> {
     // Clear existing tiles
-    this.clearAllTiles();
+    await this.clearAllTiles();
 
     // Restore layout
     this.layout = workspace.layout as LayoutNode;
 
-    // Create webviews for each tile with mute state
+    // Create tiles for each saved tile
     for (const tileState of workspace.tiles) {
-      this.createTileWebview(tileState.id, tileState.url, tileState.isMuted ?? false);
-      const tile = this.tiles.get(tileState.id);
-      if (tile) {
-        tile.title = tileState.title;
+      await this.createTile(tileState.id, tileState.url, tileState.isMuted ?? false);
+      const proxy = this.tileProxies.get(tileState.id);
+      if (proxy) {
+        proxy.title = tileState.title;
       }
     }
 
     // Restore focus
-    if (workspace.focusedTileId && this.tiles.has(workspace.focusedTileId)) {
+    if (workspace.focusedTileId && this.tileProxies.has(workspace.focusedTileId)) {
       this.focusedTileId = workspace.focusedTileId;
     } else {
       const allIds = getAllTileIds(this.layout);
@@ -921,55 +977,59 @@ export class TileManager {
   }
 
   /**
-   * Clear all tiles from the container
+   * Clear all tiles
    */
-  private clearAllTiles(): void {
-    for (const [tileId] of this.tiles) {
-      this.removeTileWebview(tileId);
+  private async clearAllTiles(): Promise<void> {
+    const promises: Promise<void>[] = [];
+    for (const tileId of this.tileProxies.keys()) {
+      promises.push(this.removeTile(tileId));
     }
-    for (const [tileId] of this.sleepingTiles) {
+    await Promise.all(promises);
+
+    for (const tileId of this.sleepingTiles.keys()) {
       this.removeSleepingTile(tileId);
     }
-    this.tiles.clear();
+
+    this.tileProxies.clear();
     this.sleepingTiles.clear();
     this.focusedTileId = null;
   }
 
   /**
-   * Put a tile to sleep - capture snapshot and replace webview with placeholder
+   * Put a tile to sleep
    */
   private async sleepTile(tileId: string): Promise<void> {
-    const tile = this.tiles.get(tileId);
-    if (!tile) return;
+    const proxy = this.tileProxies.get(tileId);
+    if (!proxy) return;
 
     // Don't sleep the focused tile
     if (tileId === this.focusedTileId) return;
 
-    // Capture snapshot before sleeping
-    let snapshot: string | null = null;
+    // Capture snapshot
+    let snapshot = '';
     try {
-      const nativeImage = await tile.webview.capturePage();
-      snapshot = nativeImage.toDataURL();
+      const result = await window.tilora.tiles.capture(this.getViewId(tileId));
+      snapshot = result.dataUrl;
     } catch (e) {
       console.warn('Failed to capture snapshot for tile:', tileId, e);
     }
 
     // Create placeholder element
-    const element = this.createSleepingPlaceholder(tileId, tile.title, snapshot);
+    const element = this.createSleepingPlaceholder(tileId, proxy.title, snapshot);
 
-    // Store sleeping tile data
+    // Store sleeping tile data with placeholder element
     const sleepingTile: SleepingTile = {
       id: tileId,
-      url: tile.url,
-      title: tile.title,
+      url: proxy.url,
+      title: proxy.title,
       snapshot,
+      isMuted: proxy.isMuted,
       element,
     };
     this.sleepingTiles.set(tileId, sleepingTile);
 
-    // Remove the webview
-    tile.webview.remove();
-    this.tiles.delete(tileId);
+    // Remove the view
+    await this.removeTile(tileId);
 
     // Add placeholder to container
     this.container.appendChild(element);
@@ -978,9 +1038,9 @@ export class TileManager {
   }
 
   /**
-   * Wake a sleeping tile - restore the webview
+   * Wake a sleeping tile
    */
-  private wakeTile(tileId: string): void {
+  private async wakeTile(tileId: string): Promise<void> {
     const sleepingTile = this.sleepingTiles.get(tileId);
     if (!sleepingTile) return;
 
@@ -988,20 +1048,20 @@ export class TileManager {
     sleepingTile.element.remove();
     this.sleepingTiles.delete(tileId);
 
-    // Recreate webview
-    this.createTileWebview(tileId, sleepingTile.url);
-    const tile = this.tiles.get(tileId);
-    if (tile) {
-      tile.title = sleepingTile.title;
+    // Recreate tile
+    await this.createTile(tileId, sleepingTile.url, sleepingTile.isMuted);
+    const proxy = this.tileProxies.get(tileId);
+    if (proxy) {
+      proxy.title = sleepingTile.title;
     }
 
     console.log('Tile woken up:', tileId);
   }
 
   /**
-   * Create a placeholder element for a sleeping tile
+   * Create placeholder for sleeping tile
    */
-  private createSleepingPlaceholder(tileId: string, title: string, snapshot: string | null): HTMLElement {
+  private createSleepingPlaceholder(tileId: string, title: string, snapshot: string): HTMLElement {
     const element = document.createElement('div');
     element.className = 'sleeping-tile';
     element.dataset.tileId = tileId;
@@ -1018,16 +1078,13 @@ export class TileManager {
       cursor: pointer;
     `;
 
-    // Add snapshot image if available
     if (snapshot) {
       const img = document.createElement('img');
       img.src = snapshot;
       img.style.cssText = `
         position: absolute;
-        top: 0;
-        left: 0;
-        width: 100%;
-        height: 100%;
+        top: 0; left: 0;
+        width: 100%; height: 100%;
         object-fit: cover;
         opacity: 0.5;
         filter: grayscale(50%);
@@ -1035,7 +1092,6 @@ export class TileManager {
       element.appendChild(img);
     }
 
-    // Add sleeping indicator overlay
     const overlay = document.createElement('div');
     overlay.style.cssText = `
       position: relative;
@@ -1069,26 +1125,23 @@ export class TileManager {
 
     const hint = document.createElement('div');
     hint.textContent = 'Click to wake';
-    hint.style.cssText = `
-      color: #666;
-      font-size: 10px;
-    `;
+    hint.style.cssText = `color: #666; font-size: 10px;`;
     overlay.appendChild(hint);
 
     element.appendChild(overlay);
 
-    // Click to wake
     element.addEventListener('click', () => {
-      this.wakeTile(tileId);
-      this.focusTile(tileId);
-      this.updateLayout();
+      void this.wakeTile(tileId).then(() => {
+        this.focusTile(tileId);
+        this.updateLayout();
+      });
     });
 
     return element;
   }
 
   /**
-   * Remove a sleeping tile placeholder
+   * Remove sleeping tile placeholder
    */
   private removeSleepingTile(tileId: string): void {
     const sleepingTile = this.sleepingTiles.get(tileId);
@@ -1099,7 +1152,7 @@ export class TileManager {
   }
 
   /**
-   * Check if a tile should be sleeping based on its size
+   * Check if tile should sleep based on size
    */
   private shouldSleep(bounds: Bounds): boolean {
     return bounds.width < TILE_LIFECYCLE.sleepThresholdWidth ||
@@ -1114,112 +1167,21 @@ export class TileManager {
   }
 
   /**
-   * Inject JavaScript to override the Fullscreen API
-   * Makes "fullscreen" just fill the webview instead of the monitor
-   * This approach: fake the API without modifying styles, let the site render naturally
-   */
-  private injectFullscreenOverride(webview: Electron.WebviewTag): void {
-    const js = `
-      (function() {
-        if (window.__tiloraFullscreenOverride) return;
-        window.__tiloraFullscreenOverride = true;
-
-        let currentFullscreenElement = null;
-
-        // Simply fake the fullscreen state - don't modify any styles
-        // Let the website render its fullscreen UI naturally within the webview
-        Element.prototype.requestFullscreen = function(options) {
-          currentFullscreenElement = this;
-
-          // Add the standard fullscreen class that sites might check for
-          this.classList.add('fullscreen');
-          document.body.classList.add('fullscreen');
-
-          // Dispatch the event so the site knows fullscreen is "active"
-          document.dispatchEvent(new Event('fullscreenchange', { bubbles: true }));
-          this.dispatchEvent(new Event('fullscreenchange', { bubbles: true }));
-
-          return Promise.resolve();
-        };
-
-        // Webkit version
-        Element.prototype.webkitRequestFullscreen = Element.prototype.requestFullscreen;
-
-        Document.prototype.exitFullscreen = function() {
-          if (currentFullscreenElement) {
-            currentFullscreenElement.classList.remove('fullscreen');
-            document.body.classList.remove('fullscreen');
-            currentFullscreenElement = null;
-          }
-          document.dispatchEvent(new Event('fullscreenchange', { bubbles: true }));
-          return Promise.resolve();
-        };
-
-        Document.prototype.webkitExitFullscreen = Document.prototype.exitFullscreen;
-
-        // Fake the fullscreen element getters
-        Object.defineProperty(Document.prototype, 'fullscreenElement', {
-          get: function() { return currentFullscreenElement; },
-          configurable: true
-        });
-
-        Object.defineProperty(Document.prototype, 'webkitFullscreenElement', {
-          get: function() { return currentFullscreenElement; },
-          configurable: true
-        });
-
-        Object.defineProperty(Document.prototype, 'fullscreenEnabled', {
-          get: function() { return true; },
-          configurable: true
-        });
-
-        Object.defineProperty(Document.prototype, 'webkitFullscreenEnabled', {
-          get: function() { return true; },
-          configurable: true
-        });
-
-        // Handle Escape to exit
-        document.addEventListener('keydown', function(e) {
-          if (e.key === 'Escape' && currentFullscreenElement) {
-            document.exitFullscreen();
-          }
-        }, true);
-
-        console.log('Tilora: Fullscreen API override installed (passthrough mode)');
-      })();
-    `;
-
-    webview.executeJavaScript(js).catch(() => {});
-  }
-
-  /**
-   * Handle tile fullscreen (contained within tile, not monitor)
-   * The video fills just the tile's space, other tiles remain visible
+   * Handle tile fullscreen
    */
   private handleTileFullscreen(tileId: string, entering: boolean): void {
     if (entering) {
       this.fullscreenTileId = tileId;
-
-      // Exit the window's fullscreen mode if it was triggered
-      window.tilora.exitWindowFullscreen();
-
-      // Just raise the z-index slightly so fullscreen content is on top
-      const tile = this.tiles.get(tileId);
-      if (tile) {
-        tile.webview.style.zIndex = '10';
-      }
+      void window.tilora.exitWindowFullscreen();
     } else {
       this.fullscreenTileId = null;
-      // Reset z-index
-      const tile = this.tiles.get(tileId);
-      if (tile) {
-        tile.webview.style.zIndex = '';
-      }
+      // Restore tile bounds after exiting fullscreen
+      this.updateLayout();
     }
   }
 
   /**
-   * Check if a tile is in fullscreen mode
+   * Check if any tile is in fullscreen
    */
   isFullscreen(): boolean {
     return this.fullscreenTileId !== null;
@@ -1229,25 +1191,13 @@ export class TileManager {
    * Exit fullscreen mode
    */
   exitFullscreen(): void {
-    if (this.fullscreenTileId) {
-      const tile = this.tiles.get(this.fullscreenTileId);
-      if (tile) {
-        // Trigger exit fullscreen in the webview
-        tile.webview.executeJavaScript('document.exitFullscreen && document.exitFullscreen()');
-      }
-    }
-  }
-
-  /**
-   * Notify that state has changed (for auto-save)
-   */
-  private onStateChange?: () => void;
-
-  setOnStateChange(callback: () => void): void {
-    this.onStateChange = callback;
+    // Fullscreen exit is handled by main process
   }
 
   private notifyStateChange(): void {
     this.onStateChange?.();
   }
 }
+
+// Re-export for backward compatibility
+export type { TileProxy as Tile } from './tile-proxy';

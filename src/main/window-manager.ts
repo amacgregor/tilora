@@ -69,6 +69,9 @@ export class WindowManager {
       },
     });
 
+    // Set window ID for IPC bridge to identify
+    (window as BrowserWindow & { tiloraWindowId: string }).tiloraWindowId = id;
+
     // Maximize if that was the saved state
     if (geometry.isMaximized) {
       window.maximize();

@@ -1,5 +1,7 @@
 import { app, BrowserWindow, ipcMain, Menu, dialog } from 'electron';
 import { windowManager } from './window-manager';
+import { tileViewManager } from './tile-view-manager';
+import { registerTileIpcHandlers } from './ipc-tile-bridge';
 import { saveAppState, getAllWindowIds, clearAllState } from './persistence';
 import type { AppState } from '@shared/workspace';
 
@@ -312,6 +314,15 @@ async function initializeWindows(): Promise<void> {
 void app.whenReady().then(() => {
   // Setup menu first (shared across all windows)
   setupMenu();
+
+  // Register tile IPC handlers
+  registerTileIpcHandlers();
+
+  // Connect TileViewManager to WindowManager
+  tileViewManager.setWindowGetter((windowId: string) => {
+    const context = windowManager.getWindowById(windowId);
+    return context?.window || null;
+  });
 
   // Initialize windows (may show restore dialog)
   void initializeWindows();
