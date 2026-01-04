@@ -95,6 +95,9 @@ interface TiloraAPI {
   onMuteAllExceptFocused: (callback: () => void) => () => void;
   onUnmuteAll: (callback: () => void) => () => void;
 
+  // Open link in new tile (middle-click)
+  onOpenInNewTile: (callback: (data: { url: string; focusNew: boolean }) => void) => () => void;
+
   // Tile Views API (WebContentsView-based)
   tiles: TilesAPI;
 

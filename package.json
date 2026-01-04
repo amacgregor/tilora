@@ -29,6 +29,7 @@
   "author": "",
   "license": "MIT",
   "devDependencies": {
+    "@types/adm-zip": "^0.5.7",
     "@types/node": "^20.10.0",
     "@types/uuid": "^9.0.8",
     "@typescript-eslint/eslint-plugin": "^6.13.0",
@@ -49,6 +50,8 @@
     "webpack-cli": "^5.1.4"
   },
   "dependencies": {
+    "adm-zip": "^0.5.16",
+    "electron-chrome-extensions": "^4.9.0",
     "uuid": "^9.0.1"
   }
 }

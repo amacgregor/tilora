@@ -97,6 +97,15 @@ const api = {
   onMuteAllExceptFocused: createListener('mute-all-except-focused'),
   onUnmuteAll: createListener('unmute-all'),
 
+  // Open link in new tile (middle-click)
+  onOpenInNewTile: (callback: (data: { url: string; focusNew: boolean }) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: { url: string; focusNew: boolean }): void => {
+      callback(data);
+    };
+    ipcRenderer.on('open-in-new-tile', handler);
+    return (): void => { ipcRenderer.removeListener('open-in-new-tile', handler); };
+  },
+
   // Tile Views API (WebContentsView-based)
   tiles: {
     // Lifecycle

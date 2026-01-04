@@ -174,6 +174,13 @@ export class TileManager {
         void this.toggleMute(tileId);
       })
     );
+
+    // Open link in new tile (middle-click)
+    this.eventUnsubscribers.push(
+      window.tilora.onOpenInNewTile(({ url, focusNew }) => {
+        void this.openInNewTile(url, focusNew);
+      })
+    );
   }
 
   /**
@@ -742,6 +749,34 @@ export class TileManager {
     this.focusTile(result.newTileId);
 
     return result.newTileId;
+  }
+
+  /**
+   * Open a URL in a new tile (used for middle-click)
+   */
+  async openInNewTile(url: string, focusNew: boolean = true): Promise<void> {
+    const originalTileId = this.focusedTileId;
+    if (!originalTileId) return;
+
+    // Split vertically to create a new tile
+    const result = splitNode(this.layout, originalTileId, 'vertical');
+    if (!result) return;
+
+    this.layout = result.newRoot;
+
+    // Create tile for new split with the target URL
+    await this.createTile(result.newTileId, url);
+
+    // Update layout
+    this.updateLayout();
+
+    // Focus based on disposition
+    if (focusNew) {
+      this.focusTile(result.newTileId);
+    } else {
+      // Keep focus on original tile
+      this.focusTile(originalTileId);
+    }
   }
 
   /**

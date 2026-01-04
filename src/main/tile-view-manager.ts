@@ -7,6 +7,7 @@
 
 import { WebContentsView, BrowserWindow, session } from 'electron';
 import { v4 as uuidv4 } from 'uuid';
+import * as path from 'path';
 import type {
   Bounds,
   NavigationStateUpdate,
@@ -16,6 +17,13 @@ import type {
 } from '@shared/tile-ipc';
 import { IPC_CHANNELS } from '@shared/ipc-channels';
 import { DEFAULT_PREFERENCES, WINDOW_CONFIG } from '@shared/constants';
+
+// Extension registration callback type
+type ExtensionCallback = {
+  onTileCreated?: (tileId: string, windowId: string) => void;
+  onTileDestroyed?: (tileId: string) => void;
+  onTileFocused?: (tileId: string) => void;
+};
 
 /**
  * Internal representation of a managed tile view
@@ -47,6 +55,7 @@ export class TileViewManager {
   private views: Map<string, ManagedTileView> = new Map();
   private windowViews: Map<string, Set<string>> = new Map(); // windowId -> tileIds
   private lastFocusedId: Map<string, string> = new Map(); // windowId -> tileId
+  private extensionCallbacks: ExtensionCallback = {};
 
   /**
    * Get or create the extension-enabled session
@@ -67,6 +76,15 @@ export class TileViewManager {
     const id = uuidv4();
     const initialUrl = url || DEFAULT_PREFERENCES.defaultUrl;
 
+    // Get the extension preload script path (must be absolute)
+    let extensionPreload: string | undefined;
+    try {
+      const preloadPath = require.resolve('electron-chrome-extensions/preload');
+      extensionPreload = path.isAbsolute(preloadPath) ? preloadPath : path.resolve(preloadPath);
+    } catch {
+      console.warn('[TileViewManager] Could not resolve extension preload script');
+    }
+
     // Create WebContentsView with extension-enabled session
     const view = new WebContentsView({
       webPreferences: {
@@ -74,6 +92,7 @@ export class TileViewManager {
         contextIsolation: true,
         sandbox: true,
         session: this.getSession(),
+        preload: extensionPreload,
       },
     });
 
@@ -109,6 +128,9 @@ export class TileViewManager {
     // Notify renderer
     window.webContents.send(IPC_CHANNELS.TILE_VIEW_CREATED, { tileId: id, success: true });
 
+    // Notify extension system
+    this.extensionCallbacks.onTileCreated?.(id, windowId);
+
     return id;
   }
 
@@ -118,6 +140,9 @@ export class TileViewManager {
   destroyView(id: string): boolean {
     const managedView = this.views.get(id);
     if (!managedView) return false;
+
+    // Notify extension system before destroying
+    this.extensionCallbacks.onTileDestroyed?.(id);
 
     const window = this.getWindow(managedView.windowId);
     if (window && !window.isDestroyed()) {
@@ -304,6 +329,9 @@ export class TileViewManager {
     // Notify renderer
     window.webContents.send(IPC_CHANNELS.TILE_VIEW_FOCUSED, { tileId: id });
 
+    // Notify extension system
+    this.extensionCallbacks.onTileFocused?.(id);
+
     return true;
   }
 
@@ -474,6 +502,9 @@ export class TileViewManager {
         if (window && !window.isDestroyed()) {
           window.webContents.send(IPC_CHANNELS.TILE_VIEW_FOCUSED, { tileId: id });
         }
+
+        // Notify extension system
+        this.extensionCallbacks.onTileFocused?.(id);
       }
     };
 
@@ -487,10 +518,22 @@ export class TileViewManager {
       }
     });
 
-    // Handle new window requests
-    webContents.setWindowOpenHandler(({ url }) => {
-      // Open in same tile for now
-      void webContents.loadURL(url);
+    // Handle new window requests (middle-click, target="_blank", etc.)
+    webContents.setWindowOpenHandler(({ url, disposition }) => {
+      // Middle-click or ctrl+click opens in new tile
+      if (disposition === 'foreground-tab' || disposition === 'background-tab') {
+        // Tell renderer to create a new tile (it manages the layout)
+        const window = this.getWindow(windowId);
+        if (window && !window.isDestroyed()) {
+          window.webContents.send('open-in-new-tile', {
+            url,
+            focusNew: disposition === 'foreground-tab',
+          });
+        }
+      } else {
+        // Regular click on target="_blank" - open in same tile
+        void webContents.loadURL(url);
+      }
       return { action: 'deny' };
     });
 
@@ -604,6 +647,13 @@ export class TileViewManager {
 
   setWindowGetter(getter: (id: string) => BrowserWindow | null): void {
     this.windowGetter = getter;
+  }
+
+  /**
+   * Set callbacks for extension integration
+   */
+  setExtensionCallbacks(callbacks: ExtensionCallback): void {
+    this.extensionCallbacks = callbacks;
   }
 
   private getWindow(windowId: string): BrowserWindow | null {
