@@ -62,4 +62,35 @@ const preloadConfig = {
   },
 };
 
-module.exports = [mainConfig, preloadConfig];
+// Overlay preload script configuration
+const overlayPreloadConfig = {
+  mode: process.env.NODE_ENV === 'production' ? 'production' : 'development',
+  entry: './src/main/overlay-preload.ts',
+  target: 'electron-preload',
+  module: {
+    rules: [
+      {
+        test: /\.ts$/,
+        use: 'ts-loader',
+        exclude: /node_modules/,
+      },
+    ],
+  },
+  resolve: {
+    extensions: ['.ts', '.js'],
+    alias: {
+      '@shared': path.resolve(__dirname, 'src/shared'),
+      '@main': path.resolve(__dirname, 'src/main'),
+    },
+  },
+  output: {
+    filename: 'overlay-preload.js',
+    path: path.resolve(__dirname, 'dist/main'),
+  },
+  node: {
+    __dirname: false,
+    __filename: false,
+  },
+};
+
+module.exports = [mainConfig, preloadConfig, overlayPreloadConfig];

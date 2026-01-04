@@ -3,6 +3,52 @@
  */
 
 import type { AppState } from '../../shared/workspace';
+import type {
+  BoundsUpdate,
+  CreateTileResponse,
+  NavigationStateUpdate,
+  AudioStateUpdate,
+  ErrorUpdate,
+  FaviconUpdate,
+  FullscreenUpdate,
+  FocusUpdate,
+  SnapshotResponse,
+} from '../../shared/tile-ipc';
+import type { OverlayUpdatePayload } from '../../shared/overlay-types';
+
+/**
+ * Tile Views API for WebContentsView-based tiles
+ */
+interface TilesAPI {
+  // Lifecycle
+  create: (url?: string) => Promise<CreateTileResponse>;
+  destroy: (tileId: string) => Promise<boolean>;
+
+  // Bounds
+  setBounds: (updates: BoundsUpdate[]) => Promise<void>;
+
+  // Navigation
+  navigate: (id: string, url: string) => Promise<boolean>;
+  goBack: (id: string) => Promise<boolean>;
+  goForward: (id: string) => Promise<boolean>;
+  reload: (id: string) => Promise<boolean>;
+  stop: (id: string) => Promise<boolean>;
+
+  // State
+  setMuted: (id: string, muted: boolean) => Promise<boolean>;
+  focus: (id: string) => Promise<boolean>;
+  capture: (id: string) => Promise<SnapshotResponse>;
+
+  // Event listeners (return unsubscribe function)
+  onNavigationState: (callback: (data: NavigationStateUpdate) => void) => () => void;
+  onTitleUpdated: (callback: (data: { tileId: string; title: string }) => void) => () => void;
+  onAudioState: (callback: (data: AudioStateUpdate) => void) => () => void;
+  onLoadError: (callback: (data: ErrorUpdate) => void) => () => void;
+  onFocused: (callback: (data: FocusUpdate) => void) => () => void;
+  onFullscreen: (callback: (data: FullscreenUpdate) => void) => () => void;
+  onFavicon: (callback: (data: FaviconUpdate) => void) => () => void;
+  onCreated: (callback: (data: CreateTileResponse) => void) => () => void;
+}
 
 interface TiloraAPI {
   getWindowBounds: () => Promise<{ width: number; height: number }>;
@@ -48,6 +94,23 @@ interface TiloraAPI {
   onToggleMute: (callback: () => void) => () => void;
   onMuteAllExceptFocused: (callback: () => void) => () => void;
   onUnmuteAll: (callback: () => void) => () => void;
+
+  // Open link in new tile (middle-click)
+  onOpenInNewTile: (callback: (data: { url: string; focusNew: boolean }) => void) => () => void;
+
+  // Tile Views API (WebContentsView-based)
+  tiles: TilesAPI;
+
+  // Overlay API
+  overlay: OverlayAPI;
+}
+
+/**
+ * Overlay API for transparent overlay window
+ */
+interface OverlayAPI {
+  updateTiles: (payload: OverlayUpdatePayload) => Promise<void>;
+  onToggleMute: (callback: (tileId: string) => void) => () => void;
 }
 
 declare global {

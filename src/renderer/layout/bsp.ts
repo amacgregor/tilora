@@ -282,7 +282,7 @@ export function findAdjacentTile(
     y: current.bounds.y + current.bounds.height / 2,
   };
 
-  let candidates: Array<{ tileId: string; distance: number; alignment: number }> = [];
+  const candidates: Array<{ tileId: string; distance: number; alignment: number }> = [];
 
   for (const tile of tileBounds) {
     if (tile.tileId === currentTileId) continue;

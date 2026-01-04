@@ -1,6 +1,6 @@
 import './styles/main.css';
 import { TileManager } from './layout/tile-manager';
-import type { AppState, Workspace } from '@shared/workspace';
+import type { AppState } from '@shared/workspace';
 import { createDefaultWorkspace } from '@shared/workspace';
 
 /**
@@ -51,7 +51,7 @@ class TiloraApp {
     this.setupIPCListeners();
 
     // Load saved state
-    this.loadState();
+    void this.loadState();
   }
 
   /**
@@ -70,7 +70,7 @@ class TiloraApp {
       // Restore active workspace
       const activeWorkspace = this.appState.workspaces[this.activeWorkspaceIndex];
       if (activeWorkspace) {
-        this.tileManager.restore(activeWorkspace);
+        await this.tileManager.restore(activeWorkspace);
         this.updateWorkspaceButton();
         this.urlBar.value = this.tileManager.getCurrentUrl();
       }
@@ -87,7 +87,7 @@ class TiloraApp {
     if (this.saveTimeout) {
       clearTimeout(this.saveTimeout);
     }
-    this.saveTimeout = setTimeout(() => this.saveState(), this.SAVE_DEBOUNCE_MS);
+    this.saveTimeout = setTimeout(() => { void this.saveState(); }, this.SAVE_DEBOUNCE_MS);
   }
 
   /**
@@ -132,13 +132,14 @@ class TiloraApp {
     this.appState.activeWorkspaceId = this.appState.workspaces[index]!.id;
 
     const newWorkspace = this.appState.workspaces[index]!;
-    this.tileManager.restore(newWorkspace);
-    this.updateWorkspaceButton();
-    this.urlBar.value = this.tileManager.getCurrentUrl();
-    this.updateNavButtons();
+    void this.tileManager.restore(newWorkspace).then(() => {
+      this.updateWorkspaceButton();
+      this.urlBar.value = this.tileManager.getCurrentUrl();
+      this.updateNavButtons();
+    });
 
     // Save immediately
-    this.saveState();
+    void this.saveState();
   }
 
   /**
@@ -163,13 +164,14 @@ class TiloraApp {
     this.activeWorkspaceIndex = this.appState.workspaces.length - 1;
     this.appState.activeWorkspaceId = newWorkspace.id;
 
-    this.tileManager.restore(newWorkspace);
-    this.updateWorkspaceButton();
-    this.urlBar.value = this.tileManager.getCurrentUrl();
-    this.updateNavButtons();
+    void this.tileManager.restore(newWorkspace).then(() => {
+      this.updateWorkspaceButton();
+      this.urlBar.value = this.tileManager.getCurrentUrl();
+      this.updateNavButtons();
+    });
 
     // Save immediately
-    this.saveState();
+    void this.saveState();
   }
 
   /**
@@ -183,7 +185,7 @@ class TiloraApp {
     }
   }
 
-  private onTileFocused(tileId: string): void {
+  private onTileFocused(_tileId: string): void {
     // Update URL bar with focused tile's URL
     this.urlBar.value = this.tileManager.getCurrentUrl();
     this.updateNavButtons();
@@ -212,7 +214,7 @@ class TiloraApp {
     // URL bar - navigate on Enter
     this.urlBar.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {
-        this.tileManager.navigate(this.urlBar.value);
+        void this.tileManager.navigate(this.urlBar.value);
       }
     });
 
@@ -223,24 +225,24 @@ class TiloraApp {
 
     // Navigation buttons
     this.btnBack.addEventListener('click', () => {
-      this.tileManager.goBack();
+      void this.tileManager.goBack();
     });
 
     this.btnForward.addEventListener('click', () => {
-      this.tileManager.goForward();
+      void this.tileManager.goForward();
     });
 
     this.btnReload.addEventListener('click', () => {
-      this.tileManager.reload();
+      void this.tileManager.reload();
     });
 
     // Split buttons
     this.btnSplitV.addEventListener('click', () => {
-      this.tileManager.split('vertical');
+      void this.tileManager.split('vertical');
     });
 
     this.btnSplitH.addEventListener('click', () => {
-      this.tileManager.split('horizontal');
+      void this.tileManager.split('horizontal');
     });
   }
 
@@ -256,17 +258,17 @@ class TiloraApp {
 
     // Listen for menu commands from main process
     window.tilora.onSplitVertical(() => {
-      this.tileManager.split('vertical');
+      void this.tileManager.split('vertical');
       this.scheduleSave();
     });
 
     window.tilora.onSplitHorizontal(() => {
-      this.tileManager.split('horizontal');
+      void this.tileManager.split('horizontal');
       this.scheduleSave();
     });
 
     window.tilora.onCloseTile(() => {
-      this.tileManager.closeTile();
+      void this.tileManager.closeTile();
       this.scheduleSave();
     });
 
@@ -276,17 +278,17 @@ class TiloraApp {
     });
 
     window.tilora.onReloadTile(() => {
-      this.tileManager.reload();
+      void this.tileManager.reload();
       this.updateNavButtons();
     });
 
     window.tilora.onGoBack(() => {
-      this.tileManager.goBack();
+      void this.tileManager.goBack();
       this.updateNavButtons();
     });
 
     window.tilora.onGoForward(() => {
-      this.tileManager.goForward();
+      void this.tileManager.goForward();
       this.updateNavButtons();
     });
 
@@ -334,32 +336,32 @@ class TiloraApp {
 
     // Directional resize
     window.tilora.onResizeLeft(() => {
-      this.tileManager.resizeInDirection('left');
+      void this.tileManager.resizeInDirection('left');
     });
 
     window.tilora.onResizeRight(() => {
-      this.tileManager.resizeInDirection('right');
+      void this.tileManager.resizeInDirection('right');
     });
 
     window.tilora.onResizeUp(() => {
-      this.tileManager.resizeInDirection('up');
+      void this.tileManager.resizeInDirection('up');
     });
 
     window.tilora.onResizeDown(() => {
-      this.tileManager.resizeInDirection('down');
+      void this.tileManager.resizeInDirection('down');
     });
 
     // Audio controls
     window.tilora.onToggleMute(() => {
-      this.tileManager.toggleMute();
+      void this.tileManager.toggleMute();
     });
 
     window.tilora.onMuteAllExceptFocused(() => {
-      this.tileManager.muteAllExceptFocused();
+      void this.tileManager.muteAllExceptFocused();
     });
 
     window.tilora.onUnmuteAll(() => {
-      this.tileManager.unmuteAll();
+      void this.tileManager.unmuteAll();
     });
   }
 
