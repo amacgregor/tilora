@@ -96,6 +96,10 @@ export class TileViewManager {
       },
     });
 
+    // Increase max listeners to prevent warnings during rapid workspace switching
+    // electron-chrome-extensions adds multiple listeners per tab
+    view.webContents.setMaxListeners(25);
+
     const managedView: ManagedTileView = {
       id,
       view,
@@ -510,6 +514,21 @@ export class TileViewManager {
 
     webContents.on('focus', notifyFocus);
 
+    // Track modifier state from mouse events via injected script
+    let lastClickModifiers = { alt: false, shift: false, ctrl: false };
+
+    // Listen for modifier info from injected script
+    webContents.on('console-message', (_event, _level, message) => {
+      if (message.startsWith('__tilora_click_modifiers:')) {
+        try {
+          const json = message.replace('__tilora_click_modifiers:', '');
+          lastClickModifiers = JSON.parse(json);
+        } catch {
+          // Ignore parse errors
+        }
+      }
+    });
+
     // Also detect focus via input events (more reliable for clicks)
     webContents.on('before-input-event', (_event, input) => {
       // Any mouse click or key press in this view means it's focused
@@ -528,8 +547,11 @@ export class TileViewManager {
           window.webContents.send('open-in-new-tile', {
             url,
             focusNew: disposition === 'foreground-tab',
+            splitHorizontal: lastClickModifiers.alt,
           });
         }
+        // Reset modifiers after use
+        lastClickModifiers = { alt: false, shift: false, ctrl: false };
       } else {
         // Regular click on target="_blank" - open in same tile
         void webContents.loadURL(url);
@@ -584,9 +606,10 @@ export class TileViewManager {
       }
     });
 
-    // Inject fullscreen override
+    // Inject scripts on dom-ready
     webContents.on('dom-ready', () => {
       this.injectFullscreenOverride(webContents);
+      this.injectMiddleClickModifierCapture(webContents);
     });
 
     // Setup audio toggle listener for Linux injected indicators
@@ -635,6 +658,43 @@ export class TileViewManager {
           // Allow the request but it will be blocked by main process
           return originalRequestFullscreen.apply(this, arguments);
         };
+      })();
+    `;
+    webContents.executeJavaScript(script).catch(() => {});
+  }
+
+  /**
+   * Inject script to capture middle-click modifier keys
+   * Sends modifier state via console.log which main process captures
+   */
+  private injectMiddleClickModifierCapture(webContents: Electron.WebContents): void {
+    const script = `
+      (function() {
+        if (window.__tiloraMiddleClickCapture) return;
+        window.__tiloraMiddleClickCapture = true;
+
+        // Capture auxclick (middle-click) to get modifier state
+        document.addEventListener('auxclick', function(e) {
+          if (e.button === 1) {
+            // Middle-click detected - log modifiers for main process to capture
+            console.log('__tilora_click_modifiers:' + JSON.stringify({
+              alt: e.altKey,
+              shift: e.shiftKey,
+              ctrl: e.ctrlKey || e.metaKey
+            }));
+          }
+        }, true);
+
+        // Also capture on mousedown for earlier detection
+        document.addEventListener('mousedown', function(e) {
+          if (e.button === 1) {
+            console.log('__tilora_click_modifiers:' + JSON.stringify({
+              alt: e.altKey,
+              shift: e.shiftKey,
+              ctrl: e.ctrlKey || e.metaKey
+            }));
+          }
+        }, true);
       })();
     `;
     webContents.executeJavaScript(script).catch(() => {});

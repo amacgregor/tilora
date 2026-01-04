@@ -70,6 +70,10 @@ export const IPC_CHANNELS = {
   // Overlay window
   OVERLAY_UPDATE_TILES: 'overlay:update-tiles',
   OVERLAY_TOGGLE_MUTE: 'overlay:toggle-mute',
+
+  // Extension registration control (for workspace switching)
+  EXTENSION_PAUSE_REGISTRATION: 'extension:pause-registration',
+  EXTENSION_RESUME_REGISTRATION: 'extension:resume-registration',
 } as const;
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS];

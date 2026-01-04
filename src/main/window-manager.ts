@@ -71,6 +71,11 @@ export class WindowManager {
       },
     });
 
+    // Increase max listeners to prevent warnings during rapid workspace switching
+    // electron-chrome-extensions adds multiple listeners per window
+    window.setMaxListeners(25);
+    window.webContents.setMaxListeners(25);
+
     // Set window ID for IPC bridge to identify
     (window as BrowserWindow & { tiloraWindowId: string }).tiloraWindowId = id;
 

@@ -211,7 +211,7 @@ function setupMenu(): void {
     },
     {
       label: 'Extensions',
-      submenu: [
+      submenu: extensionManager.isEnabled() ? [
         {
           label: 'Install from Chrome Web Store...',
           click: async () => {
@@ -345,6 +345,15 @@ function setupMenu(): void {
             }
           },
         },
+      ] : [
+        {
+          label: 'Extensions Disabled',
+          enabled: false,
+        },
+        {
+          label: 'Manifest V3 support pending',
+          enabled: false,
+        },
       ],
     },
     {
@@ -422,6 +431,15 @@ ipcMain.handle(IPC_CHANNELS.OVERLAY_UPDATE_TILES, (event, payload: OverlayUpdate
   }
 });
 
+// Extension registration control - pause during workspace switches to prevent listener leaks
+ipcMain.handle(IPC_CHANNELS.EXTENSION_PAUSE_REGISTRATION, () => {
+  extensionManager.pauseRegistration();
+});
+
+ipcMain.handle(IPC_CHANNELS.EXTENSION_RESUME_REGISTRATION, async () => {
+  await extensionManager.resumeRegistration();
+});
+
 /**
  * Show dialog to ask user whether to restore previous session
  */
@@ -483,18 +501,20 @@ void app.whenReady().then(async () => {
   // Initialize extension support
   await extensionManager.initialize();
 
-  // Connect TileViewManager to ExtensionManager
-  tileViewManager.setExtensionCallbacks({
-    onTileCreated: (tileId, windowId) => {
-      extensionManager.registerTile(tileId, windowId);
-    },
-    onTileDestroyed: (tileId) => {
-      extensionManager.unregisterTile(tileId);
-    },
-    onTileFocused: (tileId) => {
-      extensionManager.selectTile(tileId);
-    },
-  });
+  // Connect TileViewManager to ExtensionManager (only if extensions are enabled)
+  if (extensionManager.isEnabled()) {
+    tileViewManager.setExtensionCallbacks({
+      onTileCreated: (tileId, windowId) => {
+        extensionManager.registerTile(tileId, windowId);
+      },
+      onTileDestroyed: (tileId) => {
+        extensionManager.unregisterTile(tileId);
+      },
+      onTileFocused: (tileId) => {
+        extensionManager.selectTile(tileId);
+      },
+    });
+  }
 
   // Initialize windows (may show restore dialog)
   void initializeWindows();

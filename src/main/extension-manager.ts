@@ -13,6 +13,10 @@ import { tileViewManager } from './tile-view-manager';
 // Extension session partition
 const EXTENSION_PARTITION = 'persist:tilora';
 
+// Disable extension support to prevent listener leaks from electron-chrome-extensions
+// Set to true to re-enable when manifest v3 support is available
+const EXTENSIONS_DISABLED = true;
+
 /**
  * Manages Chrome extension lifecycle and integration
  */
@@ -21,10 +25,29 @@ export class ExtensionManager {
   private extensionSession: Electron.Session | null = null;
   private windowGetter: ((id: string) => BrowserWindow | null) | null = null;
 
+  // Track registered tiles to ensure proper cleanup
+  private registeredTiles: Set<string> = new Set();
+
+  // Pause registration during workspace restore to prevent listener leaks
+  private registrationPaused: boolean = false;
+  private pendingRegistrations: Array<{ tileId: string; windowId: string }> = [];
+
+  /**
+   * Check if extensions are enabled
+   */
+  isEnabled(): boolean {
+    return !EXTENSIONS_DISABLED;
+  }
+
   /**
    * Initialize extension support
    */
   async initialize(): Promise<void> {
+    if (EXTENSIONS_DISABLED) {
+      console.log('[ExtensionManager] Extensions disabled - skipping initialization');
+      return;
+    }
+
     // Get the extension-enabled session (same one used by TileViewManager)
     this.extensionSession = session.fromPartition(EXTENSION_PARTITION);
 
@@ -103,16 +126,69 @@ export class ExtensionManager {
   }
 
   /**
+   * Pause extension registration (call before workspace restore)
+   */
+  pauseRegistration(): void {
+    this.registrationPaused = true;
+    this.pendingRegistrations = [];
+  }
+
+  /**
+   * Resume extension registration (call after workspace restore)
+   * Processes all pending registrations with delays to prevent listener leaks
+   */
+  async resumeRegistration(): Promise<void> {
+    this.registrationPaused = false;
+
+    // Process pending registrations with delays
+    for (const { tileId, windowId } of this.pendingRegistrations) {
+      this.doRegisterTile(tileId, windowId);
+      // Small delay between registrations
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+
+    this.pendingRegistrations = [];
+  }
+
+  /**
    * Register a tile with the extension system
    */
   registerTile(tileId: string, windowId: string): void {
     if (!this.extensions) return;
 
+    // If registration is paused, queue for later
+    if (this.registrationPaused) {
+      this.pendingRegistrations.push({ tileId, windowId });
+      return;
+    }
+
+    this.doRegisterTile(tileId, windowId);
+  }
+
+  /**
+   * Internal tile registration
+   */
+  private doRegisterTile(tileId: string, windowId: string): void {
+    if (!this.extensions) return;
+
+    // Skip if already registered (prevents duplicate listeners)
+    if (this.registeredTiles.has(tileId)) {
+      return;
+    }
+
     const webContents = tileViewManager.getWebContents(tileId);
     const window = this.windowGetter?.(windowId);
 
-    if (webContents && window) {
+    if (webContents && window && !webContents.isDestroyed()) {
+      // Increase max listeners to prevent warnings during rapid switching
+      // electron-chrome-extensions adds multiple listeners per tab
+      const currentMax = webContents.getMaxListeners();
+      if (currentMax < 30) {
+        webContents.setMaxListeners(30);
+      }
+
       this.extensions.addTab(webContents, window);
+      this.registeredTiles.add(tileId);
     }
   }
 
@@ -121,6 +197,11 @@ export class ExtensionManager {
    */
   unregisterTile(tileId: string): void {
     if (!this.extensions) return;
+
+    // Skip if not registered
+    if (!this.registeredTiles.has(tileId)) {
+      return;
+    }
 
     const webContents = tileViewManager.getWebContents(tileId);
     if (webContents && !webContents.isDestroyed()) {
@@ -131,6 +212,16 @@ export class ExtensionManager {
         console.log('[ExtensionManager] Tab already removed or destroyed');
       }
     }
+
+    // Always remove from tracking
+    this.registeredTiles.delete(tileId);
+  }
+
+  /**
+   * Clear all registered tiles (used during bulk cleanup)
+   */
+  clearAllTiles(): void {
+    this.registeredTiles.clear();
   }
 
   /**

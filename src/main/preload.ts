@@ -97,9 +97,9 @@ const api = {
   onMuteAllExceptFocused: createListener('mute-all-except-focused'),
   onUnmuteAll: createListener('unmute-all'),
 
-  // Open link in new tile (middle-click)
-  onOpenInNewTile: (callback: (data: { url: string; focusNew: boolean }) => void): (() => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, data: { url: string; focusNew: boolean }): void => {
+  // Open link in new tile (middle-click, Alt+middle-click for horizontal)
+  onOpenInNewTile: (callback: (data: { url: string; focusNew: boolean; splitHorizontal?: boolean }) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: { url: string; focusNew: boolean; splitHorizontal?: boolean }): void => {
       callback(data);
     };
     ipcRenderer.on('open-in-new-tile', handler);
@@ -170,6 +170,14 @@ const api = {
         ipcRenderer.removeListener(IPC_CHANNELS.OVERLAY_TOGGLE_MUTE, handler);
       };
     },
+  },
+
+  // Extension registration control (for workspace switching)
+  extensions: {
+    pauseRegistration: async (): Promise<void> =>
+      ipcRenderer.invoke(IPC_CHANNELS.EXTENSION_PAUSE_REGISTRATION) as Promise<void>,
+    resumeRegistration: async (): Promise<void> =>
+      ipcRenderer.invoke(IPC_CHANNELS.EXTENSION_RESUME_REGISTRATION) as Promise<void>,
   },
 };
 

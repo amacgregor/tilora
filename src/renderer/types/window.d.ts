@@ -95,14 +95,25 @@ interface TiloraAPI {
   onMuteAllExceptFocused: (callback: () => void) => () => void;
   onUnmuteAll: (callback: () => void) => () => void;
 
-  // Open link in new tile (middle-click)
-  onOpenInNewTile: (callback: (data: { url: string; focusNew: boolean }) => void) => () => void;
+  // Open link in new tile (middle-click, Alt+middle-click for horizontal)
+  onOpenInNewTile: (callback: (data: { url: string; focusNew: boolean; splitHorizontal?: boolean }) => void) => () => void;
 
   // Tile Views API (WebContentsView-based)
   tiles: TilesAPI;
 
   // Overlay API
   overlay: OverlayAPI;
+
+  // Extension registration control (for workspace switching)
+  extensions: ExtensionsAPI;
+}
+
+/**
+ * Extensions API for controlling extension registration
+ */
+interface ExtensionsAPI {
+  pauseRegistration: () => Promise<void>;
+  resumeRegistration: () => Promise<void>;
 }
 
 /**

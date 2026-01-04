@@ -49,6 +49,11 @@ export class TileManager {
   // Event unsubscribe functions
   private eventUnsubscribers: Array<() => void> = [];
 
+  // Restore operation tracking - increments on each restore to detect stale operations
+  private restoreGeneration: number = 0;
+  private isRestoring: boolean = false;
+  private restorePromise: Promise<void> | null = null;
+
   constructor(container: HTMLElement) {
     this.container = container;
 
@@ -141,8 +146,15 @@ export class TileManager {
     // Focus updates (from main process detecting clicks in views)
     this.eventUnsubscribers.push(
       tiles.onFocused((data) => {
+        // Ignore focus events during workspace restoration to prevent race conditions
+        if (this.isRestoring) return;
+
         // data.tileId is the view ID from main process, need to find our tile ID
         const tileId = this.getTileIdByViewId(data.tileId) || data.tileId;
+
+        // Only focus if this tile exists in our current workspace
+        if (!this.tileProxies.has(tileId)) return;
+
         if (tileId !== this.focusedTileId) {
           this.focusTile(tileId);
         }
@@ -175,10 +187,10 @@ export class TileManager {
       })
     );
 
-    // Open link in new tile (middle-click)
+    // Open link in new tile (middle-click, Alt+middle-click for horizontal)
     this.eventUnsubscribers.push(
-      window.tilora.onOpenInNewTile(({ url, focusNew }) => {
-        void this.openInNewTile(url, focusNew);
+      window.tilora.onOpenInNewTile(({ url, focusNew, splitHorizontal }) => {
+        void this.openInNewTile(url, focusNew, splitHorizontal ? 'horizontal' : 'vertical');
       })
     );
   }
@@ -209,12 +221,20 @@ export class TileManager {
 
   /**
    * Create a tile via IPC
+   * @param generation - The restore generation this tile belongs to (for cancellation)
    */
-  private async createTile(tileId: string, url: string, muted: boolean = false): Promise<void> {
+  private async createTile(tileId: string, url: string, muted: boolean = false, generation?: number): Promise<void> {
     const response = await window.tilora.tiles.create(url);
 
     if (!response.success) {
       console.error('Failed to create tile:', response.error);
+      return;
+    }
+
+    // If a generation was provided and it's now stale, destroy the view we just created
+    if (generation !== undefined && generation !== this.restoreGeneration) {
+      console.log('[TileManager] Destroying orphaned tile from stale restore');
+      void window.tilora.tiles.destroy(response.tileId);
       return;
     }
 
@@ -753,13 +773,16 @@ export class TileManager {
 
   /**
    * Open a URL in a new tile (used for middle-click)
+   * @param url - URL to open
+   * @param focusNew - Whether to focus the new tile
+   * @param direction - Split direction ('vertical' = side by side, 'horizontal' = stacked)
    */
-  async openInNewTile(url: string, focusNew: boolean = true): Promise<void> {
+  async openInNewTile(url: string, focusNew: boolean = true, direction: SplitDirection = 'vertical'): Promise<void> {
     const originalTileId = this.focusedTileId;
     if (!originalTileId) return;
 
-    // Split vertically to create a new tile
-    const result = splitNode(this.layout, originalTileId, 'vertical');
+    // Split to create a new tile
+    const result = splitNode(this.layout, originalTileId, direction);
     if (!result) return;
 
     this.layout = result.newRoot;
@@ -1029,45 +1052,158 @@ export class TileManager {
 
   /**
    * Restore from a Workspace object
+   * Uses serialization to prevent concurrent restores and race conditions
    */
   async restore(workspace: Workspace): Promise<void> {
-    // Clear existing tiles
-    await this.clearAllTiles();
+    // Increment generation immediately to invalidate any in-flight operations
+    const currentGeneration = ++this.restoreGeneration;
 
-    // Restore layout
-    this.layout = workspace.layout as LayoutNode;
-
-    // Create tiles for each saved tile
-    for (const tileState of workspace.tiles) {
-      await this.createTile(tileState.id, tileState.url, tileState.isMuted ?? false);
-      const proxy = this.tileProxies.get(tileState.id);
-      if (proxy) {
-        proxy.title = tileState.title;
+    // If there's a restore in progress, wait for it to complete first
+    // This serializes workspace switches to prevent race conditions
+    if (this.restorePromise) {
+      console.log('[TileManager] Waiting for previous restore to complete...');
+      try {
+        await this.restorePromise;
+      } catch {
+        // Ignore errors from previous restore
       }
     }
 
-    // Restore focus
-    if (workspace.focusedTileId && this.tileProxies.has(workspace.focusedTileId)) {
-      this.focusedTileId = workspace.focusedTileId;
-    } else {
-      const allIds = getAllTileIds(this.layout);
-      this.focusedTileId = allIds[0] || null;
+    // Check if we're still the current generation after waiting
+    if (this.restoreGeneration !== currentGeneration) {
+      console.log('[TileManager] Restore superseded while waiting');
+      return;
     }
 
-    this.updateLayout();
+    // Create a new promise for this restore operation
+    this.restorePromise = this.doRestore(workspace, currentGeneration);
+
+    try {
+      await this.restorePromise;
+    } finally {
+      // Clear the promise if this was the last restore
+      if (this.restoreGeneration === currentGeneration) {
+        this.restorePromise = null;
+      }
+    }
+  }
+
+  /**
+   * Internal restore implementation
+   */
+  private async doRestore(workspace: Workspace, generation: number): Promise<void> {
+    this.isRestoring = true;
+
+    // Helper to check if this restore operation is still valid
+    const isStale = (): boolean => this.restoreGeneration !== generation;
+
+    try {
+      // Pause extension registration to prevent listener leaks during rapid switching
+      await window.tilora.extensions.pauseRegistration();
+
+      // Clear existing tiles
+      await this.clearAllTiles();
+
+      // Check if a newer restore started
+      if (isStale()) {
+        console.log('[TileManager] Restore aborted - newer restore in progress');
+        return;
+      }
+
+      // Add delay after clearing to let extension library clean up listeners
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      if (isStale()) {
+        console.log('[TileManager] Restore aborted during cleanup delay');
+        return;
+      }
+
+      // Restore layout
+      this.layout = workspace.layout as LayoutNode;
+
+      // Create tiles for each saved tile (sequentially to maintain order)
+      for (const tileState of workspace.tiles) {
+        // Check before each tile creation
+        if (isStale()) {
+          console.log('[TileManager] Restore aborted during tile creation');
+          return;
+        }
+
+        // Pass generation so createTile can clean up if restore is cancelled mid-flight
+        await this.createTile(tileState.id, tileState.url, tileState.isMuted ?? false, generation);
+
+        // Check again after creation (in case it was cancelled during await)
+        if (isStale()) {
+          console.log('[TileManager] Restore aborted after tile creation');
+          return;
+        }
+
+        const proxy = this.tileProxies.get(tileState.id);
+        if (proxy) {
+          proxy.title = tileState.title;
+        }
+      }
+
+      // Final staleness check before focusing
+      if (isStale()) {
+        console.log('[TileManager] Restore aborted before focus');
+        return;
+      }
+
+      // Restore focus
+      if (workspace.focusedTileId && this.tileProxies.has(workspace.focusedTileId)) {
+        this.focusedTileId = workspace.focusedTileId;
+      } else {
+        const allIds = getAllTileIds(this.layout);
+        this.focusedTileId = allIds[0] || null;
+      }
+
+      this.updateLayout();
+
+      // Focus the restored tile (after layout is updated)
+      if (this.focusedTileId && !isStale()) {
+        const viewId = this.getViewId(this.focusedTileId);
+        void window.tilora.tiles.focus(viewId);
+      }
+
+    } finally {
+      // Only clear isRestoring and resume registration if this is still the current generation
+      if (!isStale()) {
+        // Resume extension registration - this processes all pending registrations
+        try {
+          await window.tilora.extensions.resumeRegistration();
+        } catch (e) {
+          console.error('[TileManager] Failed to resume extension registration:', e);
+        }
+
+        // Use longer delay to ensure all focus events are processed
+        setTimeout(() => {
+          // Double-check before clearing
+          if (this.restoreGeneration === generation) {
+            this.isRestoring = false;
+          }
+        }, 200);
+      }
+    }
   }
 
   /**
    * Clear all tiles
+   * Destroys tiles sequentially to allow extension library to properly clean up listeners
    */
   private async clearAllTiles(): Promise<void> {
-    const promises: Promise<void>[] = [];
-    for (const tileId of this.tileProxies.keys()) {
-      promises.push(this.removeTile(tileId));
-    }
-    await Promise.all(promises);
+    // Get all tile IDs upfront since we'll be modifying the map
+    const tileIds = Array.from(this.tileProxies.keys());
+    const sleepingTileIds = Array.from(this.sleepingTiles.keys());
 
-    for (const tileId of this.sleepingTiles.keys()) {
+    // Destroy tiles sequentially to reduce listener pressure
+    for (const tileId of tileIds) {
+      await this.removeTile(tileId);
+      // Small delay between destructions to let extension library clean up
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+
+    for (const tileId of sleepingTileIds) {
       this.removeSleepingTile(tileId);
     }
 
